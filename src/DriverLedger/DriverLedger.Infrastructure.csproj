@@ -6,4 +6,9 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\DriverLedger.Application\DriverLedger.Application.csproj" />
+    <ProjectReference Include="..\DriverLedger.Domain\DriverLedger.Domain.csproj" />
+  </ItemGroup>
+
 </Project>

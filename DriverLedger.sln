@@ -1,0 +1,44 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36414.22
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{02EA681E-C7D8-13C7-8484-4AC65E1B71E8}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DriverLedger.Api", "src\DriverLedger.Api\DriverLedger.Api.csproj", "{8B828887-55B4-B54C-EDCF-3F1C23BFF742}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DriverLedger.Functions", "src\DriverLedger.Functions\DriverLedger.Functions.csproj", "{1DF1F140-7961-415D-9BEA-FB53672D1EEF}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DriverLedger.Application", "DriverLedger.Application\DriverLedger.Application.csproj", "{D8B29C54-2C0C-4839-A65C-B2540FA7797A}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{8B828887-55B4-B54C-EDCF-3F1C23BFF742}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8B828887-55B4-B54C-EDCF-3F1C23BFF742}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8B828887-55B4-B54C-EDCF-3F1C23BFF742}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8B828887-55B4-B54C-EDCF-3F1C23BFF742}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1DF1F140-7961-415D-9BEA-FB53672D1EEF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1DF1F140-7961-415D-9BEA-FB53672D1EEF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1DF1F140-7961-415D-9BEA-FB53672D1EEF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1DF1F140-7961-415D-9BEA-FB53672D1EEF}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D8B29C54-2C0C-4839-A65C-B2540FA7797A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D8B29C54-2C0C-4839-A65C-B2540FA7797A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D8B29C54-2C0C-4839-A65C-B2540FA7797A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D8B29C54-2C0C-4839-A65C-B2540FA7797A}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{8B828887-55B4-B54C-EDCF-3F1C23BFF742} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
+		{1DF1F140-7961-415D-9BEA-FB53672D1EEF} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
+		{D8B29C54-2C0C-4839-A65C-B2540FA7797A} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {0D83A321-75E0-4869-93C4-5ECC011F54D9}
+	EndGlobalSection
+EndGlobal

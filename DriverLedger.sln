@@ -11,11 +11,11 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DriverLedger.Functions", "s
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DriverLedger.Application", "src\DriverLedger.Application\DriverLedger.Application.csproj", "{E4ED6B5C-5958-520A-6E25-E9CA7C7D90C3}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DriverLedger.Infrastructure", "src\DriverLedger\DriverLedger.Infrastructure.csproj", "{2DE3BC53-7F6D-4D80-A878-8D4E597E2E8C}"
-EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "test", "test", "{85A93695-DB61-4B5D-B0EE-D8E26C49FD7D}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DriverLedger.Domain", "src\DriverLedger.Domain\DriverLedger.Domain.csproj", "{2583CF83-2602-4B1E-B898-60D4C78F1142}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DriverLedger.Infrastructure", "src\DriverLedger.Infrastructure\DriverLedger.Infrastructure.csproj", "{6CB7A4D2-A549-BF19-D461-2FBC584BAF58}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -35,14 +35,14 @@ Global
 		{E4ED6B5C-5958-520A-6E25-E9CA7C7D90C3}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{E4ED6B5C-5958-520A-6E25-E9CA7C7D90C3}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{E4ED6B5C-5958-520A-6E25-E9CA7C7D90C3}.Release|Any CPU.Build.0 = Release|Any CPU
-		{2DE3BC53-7F6D-4D80-A878-8D4E597E2E8C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{2DE3BC53-7F6D-4D80-A878-8D4E597E2E8C}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{2DE3BC53-7F6D-4D80-A878-8D4E597E2E8C}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{2DE3BC53-7F6D-4D80-A878-8D4E597E2E8C}.Release|Any CPU.Build.0 = Release|Any CPU
 		{2583CF83-2602-4B1E-B898-60D4C78F1142}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{2583CF83-2602-4B1E-B898-60D4C78F1142}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{2583CF83-2602-4B1E-B898-60D4C78F1142}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{2583CF83-2602-4B1E-B898-60D4C78F1142}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6CB7A4D2-A549-BF19-D461-2FBC584BAF58}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6CB7A4D2-A549-BF19-D461-2FBC584BAF58}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6CB7A4D2-A549-BF19-D461-2FBC584BAF58}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6CB7A4D2-A549-BF19-D461-2FBC584BAF58}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -51,8 +51,8 @@ Global
 		{8B828887-55B4-B54C-EDCF-3F1C23BFF742} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
 		{1DF1F140-7961-415D-9BEA-FB53672D1EEF} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
 		{E4ED6B5C-5958-520A-6E25-E9CA7C7D90C3} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
-		{2DE3BC53-7F6D-4D80-A878-8D4E597E2E8C} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
 		{2583CF83-2602-4B1E-B898-60D4C78F1142} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
+		{6CB7A4D2-A549-BF19-D461-2FBC584BAF58} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {0D83A321-75E0-4869-93C4-5ECC011F54D9}

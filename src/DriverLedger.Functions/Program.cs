@@ -1,14 +1,25 @@
-using Microsoft.Azure.Functions.Worker;
-using Microsoft.Azure.Functions.Worker.Builder;
+using Azure.Messaging.ServiceBus;
+using DriverLedger.Application.Common;
+using DriverLedger.Infrastructure.Common;
+using DriverLedger.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
-var builder = FunctionsApplication.CreateBuilder(args);
+var host = new HostBuilder()
+    .ConfigureFunctionsWebApplication()
+    .ConfigureServices((ctx, services) =>
+    {
+        services.AddApplicationInsightsTelemetryWorkerService();
 
-builder.ConfigureFunctionsWebApplication();
+        services.AddScoped<ITenantProvider, TenantProvider>();
 
-builder.Services
-    .AddApplicationInsightsTelemetryWorkerService()
-    .ConfigureFunctionsApplicationInsights();
+        services.AddDbContext<DriverLedgerDbContext>(opt =>
+            opt.UseSqlServer(ctx.Configuration.GetConnectionString("Sql")));
 
-builder.Build().Run();
+        services.AddSingleton(_ => new ServiceBusClient(ctx.Configuration["Azure:ServiceBusConnectionString"]));
+    })
+    .Build();
+
+host.Run();

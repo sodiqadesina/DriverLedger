@@ -1,0 +1,25 @@
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DriverLedger.Application\DriverLedger.Application.csproj" />
+    <ProjectReference Include="..\DriverLedger\DriverLedger.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="Common\Middleware\" />
+    <Folder Include="Common\Auth\" />
+    <Folder Include="Modules\Files\" />
+    <Folder Include="Modules\Receipts\" />
+  </ItemGroup>
+
+</Project>

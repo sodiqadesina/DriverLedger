@@ -1,4 +1,3 @@
-using System.Text;
 using Azure.Messaging.ServiceBus;
 using Azure.Storage.Blobs;
 using DriverLedger.Api.Common.Auth;
@@ -13,7 +12,11 @@ using DriverLedger.Infrastructure.Messaging;
 using DriverLedger.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -38,24 +41,42 @@ builder.Services.AddSingleton<IBlobStorage, BlobStorage>();
 builder.Services.AddSingleton<IMessagePublisher, ServiceBusPublisher>();
 
 // Auth
+builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection("Auth"));
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
 
-var jwt = builder.Configuration.GetSection("Auth").Get<JwtOptions>()!;
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
+    .AddJwtBearer(); // configure below via options pipeline
+
+builder.Services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
+    .Configure<IOptions<JwtOptions>>((options, jwtOptions) =>
     {
-        options.TokenValidationParameters = new()
+        var jwt = jwtOptions.Value;
+
+        var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwt.JwtKey))
+        {
+            KeyId = "driverledger-v1"
+        };
+
+        // Use JwtSecurityTokenHandler path
+        options.TokenHandlers.Clear();
+        options.TokenHandlers.Add(new JwtSecurityTokenHandler());
+
+        options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
             ValidateAudience = true,
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
+
             ValidIssuer = jwt.JwtIssuer,
             ValidAudience = jwt.JwtAudience,
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwt.JwtKey))
+
+            IssuerSigningKey = signingKey,
+            TryAllIssuerSigningKeys = true,
+
+            ClockSkew = TimeSpan.FromMinutes(2)
         };
     });
-
 builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy("RequireDriver", p => p.RequireRole("Driver"));
@@ -77,11 +98,11 @@ app.UseSwaggerUI();
 
 app.UseHttpsRedirection();
 
+app.UseMiddleware<CorrelationMiddleware>();
 app.UseAuthentication();
+app.UseMiddleware<TenantScopeMiddleware>();
 app.UseAuthorization();
 
-app.UseMiddleware<CorrelationMiddleware>();
-app.UseMiddleware<TenantScopeMiddleware>();
 
 // Modules registration (below)
 ApiAuth.MapAuthEndpoints(app);

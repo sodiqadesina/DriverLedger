@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MessageEnvelopeV1",
+  "type": "object",
+  "required": ["messageId", "type", "occurredAt", "tenantId", "correlationId", "data"],
+  "properties": {
+    "messageId": { "type": "string" },
+    "type": { "type": "string" },
+    "occurredAt": { "type": "string" },
+    "tenantId": { "type": "string" },
+    "correlationId": { "type": "string" },
+    "data": { "type": "object" }
+  },
+  "additionalProperties": true
+}

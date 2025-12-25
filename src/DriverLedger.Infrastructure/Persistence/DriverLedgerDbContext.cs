@@ -67,6 +67,7 @@ namespace DriverLedger.Infrastructure.Persistence
                 b.Property(x => x.Province).HasMaxLength(10);
                 b.Property(x => x.PolicyJson).HasColumnType("nvarchar(max)");
                 b.HasIndex(x => x.TenantId).IsUnique();
+                b.Property(x => x.DefaultBusinessUsePct);
             });
 
             // Files

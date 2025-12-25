@@ -2,6 +2,10 @@
 using DriverLedger.Domain.Identity;
 using DriverLedger.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Linq;
+
 
 namespace DriverLedger.Api.Modules.Auth
 {
@@ -21,18 +25,21 @@ namespace DriverLedger.Api.Modules.Auth
                 var hash = BCrypt.Net.BCrypt.HashPassword(req.Password);
                 var user = new User(email, hash);
 
-                // Ensure roles exist + assign Driver
-                var driverRole = await db.Roles.FirstOrDefaultAsync(r => r.Name == "Driver", ct) ?? new Role("Driver");
-                if (driverRole.Id == Guid.Empty) { /* EF will set */ }
+                // Ensure role exists
+                var driverRole = await db.Roles.FirstOrDefaultAsync(r => r.Name == "Driver", ct);
+                if (driverRole is null)
+                {
+                    driverRole = new Role("Driver");
+                    db.Roles.Add(driverRole);
+                    await db.SaveChangesAsync(ct); // ensure role has Id
+                }
 
                 db.Users.Add(user);
-                if (driverRole.Id == Guid.Empty) db.Roles.Add(driverRole);
-
-                // Save so we have IDs
-                await db.SaveChangesAsync(ct);
+                await db.SaveChangesAsync(ct); // ensure user has Id
 
                 db.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = driverRole.Id });
                 await db.SaveChangesAsync(ct);
+
 
                 var jwt = tokens.CreateToken(user, new[] { "Driver" });
                 return Results.Ok(new { token = jwt });
@@ -57,6 +64,25 @@ namespace DriverLedger.Api.Modules.Auth
                 var jwt = tokens.CreateToken(user, roles);
                 return Results.Ok(new { token = jwt });
             });
+
+            group.MapGet("/me", (ClaimsPrincipal user) =>
+            {
+                // Minimal "who am I" response for MVP + tests
+                var userId = user.FindFirstValue(JwtRegisteredClaimNames.Sub) ?? user.FindFirstValue(ClaimTypes.NameIdentifier);
+                var email = user.FindFirstValue(JwtRegisteredClaimNames.Email) ?? user.FindFirstValue(ClaimTypes.Email);
+                var tenantId = user.FindFirstValue("tenantId");
+                var roles = user.FindAll(ClaimTypes.Role).Select(r => r.Value).ToArray();
+
+                return Results.Ok(new
+                {
+                    userId,
+                    email,
+                    tenantId,
+                    roles
+                });
+            }).RequireAuthorization("RequireDriver");
+
+
         }
 
         public sealed record RegisterRequest(string Email, string Password);

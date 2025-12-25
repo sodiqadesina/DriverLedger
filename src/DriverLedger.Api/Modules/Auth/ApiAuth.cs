@@ -1,10 +1,7 @@
 ﻿using DriverLedger.Api.Common.Auth;
 using DriverLedger.Domain.Identity;
-using DriverLedger.Infrastructure.Persistence;
-using Microsoft.EntityFrameworkCore;
 using System.IdentityModel.Tokens.Jwt;
-using System.Security.Claims;
-using System.Linq;
+
 
 
 namespace DriverLedger.Api.Modules.Auth

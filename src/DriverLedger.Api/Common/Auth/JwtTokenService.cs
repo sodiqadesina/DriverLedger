@@ -1,5 +1,4 @@
 ﻿using System.IdentityModel.Tokens.Jwt;
-using System.Security.Claims;
 using System.Text;
 using DriverLedger.Domain.Identity;
 using Microsoft.Extensions.Options;
@@ -22,7 +21,7 @@ namespace DriverLedger.Api.Common.Auth
             var claims = new List<Claim>
             {
                 new(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
-                new(ClaimTypes.NameIdentifier, user.Id.ToString()),   // ✅ add this
+                new(ClaimTypes.NameIdentifier, user.Id.ToString()),   
                 new(JwtRegisteredClaimNames.Email, user.Email),
                 new("tenantId", user.Id.ToString())
             };

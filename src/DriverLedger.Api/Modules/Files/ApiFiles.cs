@@ -1,7 +1,6 @@
-﻿using DriverLedger.Domain.Files;
+
+using DriverLedger.Application.Auditing;
 using DriverLedger.Infrastructure.Files;
-using DriverLedger.Infrastructure.Persistence;
-using System.Security.Claims;
 using System.Security.Cryptography;
 
 namespace DriverLedger.Api.Modules.Files
@@ -13,7 +12,7 @@ namespace DriverLedger.Api.Modules.Files
         {
             var group = app.MapGroup("/files").WithTags("Files").RequireAuthorization("RequireDriver");
 
-            group.MapPost("/", async (HttpRequest request, DriverLedgerDbContext db, IBlobStorage blob, CancellationToken ct) =>
+            group.MapPost("/", async (HttpRequest request, DriverLedgerDbContext db, IBlobStorage blob, IAuditWriter audit, CancellationToken ct) =>
             {
                 if (!request.HasFormContentType)
                     return Results.BadRequest("multipart/form-data required.");
@@ -60,6 +59,13 @@ namespace DriverLedger.Api.Modules.Files
 
                 db.FileObjects.Add(fo);
                 await db.SaveChangesAsync(ct);
+
+                await audit.WriteAsync(
+                action: "file.uploaded",
+                entityType: "FileObject",
+                entityId: fo.Id.ToString("D"),
+                metadata: new { fo.ContentType, fo.Size, fo.OriginalName, fo.Sha256 },
+                ct: ct);
 
                 return Results.Ok(new { fileObjectId = fo.Id });
             });

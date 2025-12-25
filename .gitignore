@@ -3,4 +3,5 @@ bin/
 obj/
 **/bin/
 **/obj/
-appsettings.json/
+appsettings.json/appsettings.json
+appsettings.*.json

@@ -1,0 +1,1 @@
+use "C:\Users\sina\Desktop\iso-images\New folder>azurite --blobHost 127.0.0.1 --blobPort 10000 --queuePort 10001 --tablePort 10002" to start up azurite before running test !!

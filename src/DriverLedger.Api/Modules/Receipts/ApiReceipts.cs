@@ -1,8 +1,7 @@
-﻿using DriverLedger.Application.Messaging;
-using DriverLedger.Domain.Receipts;
+using DriverLedger.Application.Auditing;
+using DriverLedger.Application.Messaging;
 using DriverLedger.Infrastructure.Messaging;
-using DriverLedger.Infrastructure.Persistence;
-using System.Security.Claims;
+using DriverLedger.Application.Receipts.Messages;
 
 namespace DriverLedger.Api.Modules.Receipts
 {
@@ -33,7 +32,7 @@ namespace DriverLedger.Api.Modules.Receipts
                 return Results.Ok(new { receiptId = receipt.Id, status = receipt.Status });
             });
 
-            group.MapPost("/{id:guid}/submit", async (Guid id, DriverLedgerDbContext db, IMessagePublisher publisher, HttpContext ctx, CancellationToken ct) =>
+            group.MapPost("/{id:guid}/submit", async (Guid id, DriverLedgerDbContext db, IMessagePublisher publisher, IAuditWriter audit, HttpContext ctx, CancellationToken ct) =>
             {
                 var receipt = await db.Receipts.FindAsync([id], ct);
                 if (receipt is null) return Results.NotFound();
@@ -61,11 +60,19 @@ namespace DriverLedger.Api.Modules.Receipts
                 receipt.Status = "Processing";
                 await db.SaveChangesAsync(ct);
 
+                await audit.WriteAsync(
+                    action: "receipt.submitted",
+                    entityType: "Receipt",
+                    entityId: receipt.Id.ToString("D"),
+                    metadata: new { receipt.FileObjectId, receipt.Status },
+                    ct: ct);
+
+
                 return Results.Ok(new { receiptId = receipt.Id, status = receipt.Status });
             });
         }
 
         public sealed record CreateReceiptRequest(Guid FileObjectId);
-        public sealed record ReceiptReceived(Guid ReceiptId, Guid FileObjectId);
+        
     }
 }

@@ -1,17 +1,11 @@
-﻿using DriverLedger.Application.Common;
+using DriverLedger.Application.Common;
+using DriverLedger.Domain.Auditing;
 using DriverLedger.Domain.Common;
 using DriverLedger.Domain.Drivers;
 using DriverLedger.Domain.Files;
 using DriverLedger.Domain.Identity;
 using DriverLedger.Domain.Ops;
 using DriverLedger.Domain.Receipts;
-using Microsoft.EntityFrameworkCore;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Reflection.Emit;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace DriverLedger.Infrastructure.Persistence
 {
@@ -33,6 +27,7 @@ namespace DriverLedger.Infrastructure.Persistence
         public DbSet<FileObject> FileObjects => Set<FileObject>();
         public DbSet<Receipt> Receipts => Set<Receipt>();
         public DbSet<ProcessingJob> ProcessingJobs => Set<ProcessingJob>();
+        public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -99,6 +94,19 @@ namespace DriverLedger.Infrastructure.Persistence
                 b.Property(x => x.DedupeKey).HasMaxLength(200).IsRequired();
                 b.Property(x => x.Status).HasMaxLength(30).IsRequired();
             });
+
+            modelBuilder.Entity<AuditEvent>(b =>
+            {
+                b.ToTable("AuditEvents");
+                b.HasIndex(x => new { x.TenantId, x.OccurredAt });
+                b.Property(x => x.ActorUserId).HasMaxLength(100).IsRequired();
+                b.Property(x => x.Action).HasMaxLength(200).IsRequired();
+                b.Property(x => x.EntityType).HasMaxLength(100).IsRequired();
+                b.Property(x => x.EntityId).HasMaxLength(100).IsRequired();
+                b.Property(x => x.CorrelationId).HasMaxLength(100).IsRequired();
+                b.Property(x => x.MetadataJson).HasColumnType("nvarchar(max)");
+            });
+
 
             // Global tenant filter (applies to any entity implementing ITenantScoped)
             foreach (var entityType in modelBuilder.Model.GetEntityTypes())

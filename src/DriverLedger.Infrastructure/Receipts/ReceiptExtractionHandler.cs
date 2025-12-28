@@ -12,6 +12,7 @@ using DriverLedger.Domain.Receipts.Review;
 using DriverLedger.Infrastructure.Files;
 using DriverLedger.Infrastructure.Messaging;
 using DriverLedger.Infrastructure.Persistence;
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
 
@@ -26,6 +27,13 @@ namespace DriverLedger.Infrastructure.Receipts
     ILogger<ReceiptExtractionHandler> logger)
     {
         private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
+
+        private static bool IsUniqueViolation(DbUpdateException ex)
+        {
+            if (ex.InnerException is not SqlException sql) return false;
+            return sql.Number is 2601 or 2627;
+        }
+
 
         public async Task HandleAsync(MessageEnvelope<ReceiptReceived> envelope, CancellationToken ct)
         {
@@ -80,6 +88,30 @@ namespace DriverLedger.Infrastructure.Receipts
                 job.LastError = null;
             }
 
+            // Ensure job row exists BEFORE we do external work (DI call).
+            // Handle concurrent duplicate insert safely under retries.
+            try
+            {
+                await db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+            {
+                logger.LogWarning("ProcessingJob duplicate detected for dedupeKey={DedupeKey}. Reloading existing job.", dedupeKey);
+
+                // Another attempt already inserted it. Reload and continue safely.
+                job = await db.ProcessingJobs
+                    .SingleAsync(x => x.TenantId == tenantId && x.JobType == "receipt.extract" && x.DedupeKey == dedupeKey, ct);
+
+                // Mark as started for this attempt
+                job.Attempts += 1;
+                job.Status = "Started";
+                job.UpdatedAt = DateTimeOffset.UtcNow;
+                job.LastError = null;
+
+                await db.SaveChangesAsync(ct);
+            }
+
+
             try
             {
                 var receipt = await db.Receipts.SingleAsync(x => x.TenantId == tenantId && x.Id == payload.ReceiptId, ct);
@@ -88,12 +120,25 @@ namespace DriverLedger.Infrastructure.Receipts
                 // Adjust the property name to match your FileObject model:
                 var blobPath = fileObj.BlobPath;
 
-                await using var stream = await blobStorage.OpenReadAsync(blobPath, ct);
-                var normalized = await extractor.ExtractAsync(stream, ct);
+                await using var remote = await blobStorage.OpenReadAsync(blobPath, ct);
 
-                var confidence = ReceiptConfidenceCalculator.Compute(normalized);
+                // Azure Document Intelligence requires a seekable stream.
+                // Blob/network streams often are not seekable, so buffer to memory.
+                await using var ms = new MemoryStream();
+                await remote.CopyToAsync(ms, ct);
+                ms.Position = 0;
 
-                var decision = ReceiptHoldEvaluator.Evaluate(normalized, confidence);
+                var normalized = await extractor.ExtractAsync(ms, ct);
+
+                // Confidence coming from Document Intelligence (field-level confidence aggregated)
+                var extractorConfidence = normalized.Confidence;
+
+                // Your own policy confidence (your rules can boost/penalize based on missing fields, totals, etc.)
+                var policyConfidence = ReceiptConfidenceCalculator.Compute(normalized);
+
+                // Use policy confidence for HOLD decision (recommended)
+                var decision = ReceiptHoldEvaluator.Evaluate(normalized, policyConfidence);
+
 
                 var isHold = decision.IsHold;
                 var holdReason = decision.Reason;
@@ -114,7 +159,7 @@ namespace DriverLedger.Infrastructure.Receipts
                         normalized.Tax,
                         normalized.Currency
                     }, JsonOpts),
-                    Confidence = confidence,
+                    Confidence = policyConfidence,
                     ExtractedAt = DateTimeOffset.UtcNow
                 });
 
@@ -150,7 +195,7 @@ namespace DriverLedger.Infrastructure.Receipts
                         EntityId = receipt.Id.ToString("D"),
                         OccurredAt = DateTimeOffset.UtcNow,
                         CorrelationId = correlationId,
-                        MetadataJson = JsonSerializer.Serialize(new { holdReason, confidence }, JsonOpts)
+                        MetadataJson = JsonSerializer.Serialize(new { holdReason, policyConfidence }, JsonOpts)
                     });
                 }
                 else
@@ -166,7 +211,7 @@ namespace DriverLedger.Infrastructure.Receipts
                         EntityId = receipt.Id.ToString("D"),
                         OccurredAt = DateTimeOffset.UtcNow,
                         CorrelationId = correlationId,
-                        MetadataJson = JsonSerializer.Serialize(new { confidence }, JsonOpts)
+                        MetadataJson = JsonSerializer.Serialize(new { policyConfidence }, JsonOpts)
                     });
                 }
 
@@ -179,7 +224,7 @@ namespace DriverLedger.Infrastructure.Receipts
                 var extractedPayload = new ReceiptExtractedV1(
                     ReceiptId: receipt.Id,
                     FileObjectId: receipt.FileObjectId,
-                    Confidence: confidence,
+                    Confidence: policyConfidence,
                     IsHold: isHold,
                     HoldReason: holdReason
                 );

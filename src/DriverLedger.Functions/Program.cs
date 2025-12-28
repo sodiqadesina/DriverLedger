@@ -6,6 +6,7 @@ using DriverLedger.Application.Receipts.Extraction;
 using DriverLedger.Infrastructure.Common;
 using DriverLedger.Infrastructure.Files;
 using DriverLedger.Infrastructure.Messaging;
+using DriverLedger.Infrastructure.Options;
 using DriverLedger.Infrastructure.Persistence;
 using DriverLedger.Infrastructure.Receipts;
 using DriverLedger.Infrastructure.Receipts.Extraction;
@@ -37,9 +38,9 @@ var host = new HostBuilder()
         services.AddSingleton<ServiceBusPublisher>(); // your handler uses concrete type
         services.AddScoped<SnapshotCalculator>();
 
-        // Receipt extractor: start with Fake
-        // Swap to AzureDocumentIntelligenceReceiptExtractor later
-        services.AddSingleton<IReceiptExtractor, FakeReceiptExtractor>();
+        // Receipt extractor: REAL
+        services.Configure<DocumentIntelligenceOptions>(ctx.Configuration.GetSection("Azure:DocumentIntelligence"));
+        services.AddSingleton<IReceiptExtractor, AzureDocumentIntelligenceReceiptExtractor>();
 
         // Handlers
         services.AddScoped<IReceiptReceivedHandler, ReceiptReceivedHandler>();

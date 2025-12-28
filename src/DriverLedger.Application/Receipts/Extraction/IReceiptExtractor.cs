@@ -8,8 +8,11 @@ namespace DriverLedger.Application.Receipts.Extraction
     decimal? Total,
     decimal? Tax,
     string Currency,
-    string RawJson
+    decimal Confidence,
+    string RawJson,
+    string? NormalizedFieldsJson = null
 );
+
 
     public interface IReceiptExtractor
     {

@@ -15,6 +15,7 @@ namespace DriverLedger.UnitTests.Receipts
                 Total: 20m,
                 Tax: null,
                 Currency: "CAD",
+                Confidence: 0.90m,
                 RawJson: "{}"
             );
 
@@ -33,6 +34,7 @@ namespace DriverLedger.UnitTests.Receipts
                 Total: 20m,
                 Tax: null,
                 Currency: "CAD",
+                Confidence: 1.0m,
                 RawJson: "{}"
             );
 
@@ -52,6 +54,7 @@ namespace DriverLedger.UnitTests.Receipts
                 Total: 20m,
                 Tax: 2.6m,
                 Currency: "CAD",
+                Confidence: 0.90m, 
                 RawJson: "{}"
             );
 

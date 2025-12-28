@@ -1,0 +1,15 @@
+{
+    "type": "object",
+    "required": [ "receiptId", "fileObjectId" ],
+    "properties": {
+        "receiptId": {
+            "type": "string",
+            "format": "uuid"
+        },
+        "fileObjectId": {
+            "type": "string",
+            "format": "uuid"
+        }
+    },
+    "additionalProperties": true
+}

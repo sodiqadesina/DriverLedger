@@ -1,4 +1,4 @@
-﻿namespace DriverLedger.IntegrationTests.Fixtures;
+namespace DriverLedger.IntegrationTests.Fixtures;
 
 /// <summary>
 /// Provides SQL connection string for integration tests.

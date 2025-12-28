@@ -1,5 +1,9 @@
+using DriverLedger.Application.Receipts.Extraction;
+using DriverLedger.Infrastructure.Files;
 using DriverLedger.Infrastructure.Messaging;
 using DriverLedger.Infrastructure.Persistence;
+using DriverLedger.Infrastructure.Receipts.Extraction;
+using DriverLedger.IntegrationTests.Infrastructure;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
@@ -7,56 +11,68 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
-namespace DriverLedger.IntegrationTests;
 
-public sealed class ApiFactory : WebApplicationFactory<Program>
+namespace DriverLedger.IntegrationTests
 {
-    private readonly string _connectionString;
-
-    public ApiFactory(string connectionString)
-        => _connectionString = connectionString;
-
-    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
     {
-        builder.UseEnvironment("Testing");
+        private readonly string _connectionString;
 
-        builder.ConfigureAppConfiguration((ctx, cfg) =>
+        public ApiFactory(string connectionString) => _connectionString = connectionString;
+
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
-            // Deterministic configuration for integration tests
-            var settings = new Dictionary<string, string?>
+            builder.UseEnvironment("Testing");
+
+            builder.ConfigureAppConfiguration((ctx, cfg) =>
             {
-                ["ConnectionStrings:Sql"] = _connectionString,
+                cfg.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["ConnectionStrings:Sql"] = _connectionString,
 
-                // JWT settings (must match JwtBearer validation)
-                ["Auth:JwtKey"] = "dev_test_super_secret_key_32chars_minimum!!",
-                ["Auth:JwtIssuer"] = "driverledger-test",
-                ["Auth:JwtAudience"] = "driverledger-test",
+                    ["Auth:JwtKey"] = "dev_test_super_secret_key_32chars_minimum!!",
+                    ["Auth:JwtIssuer"] = "driverledger-test",
+                    ["Auth:JwtAudience"] = "driverledger-test",
 
-                // Azure config (present but never actually used)
-                ["Azure:BlobConnectionString"] = "UseDevelopmentStorage=true",
-                ["Azure:ServiceBusConnectionString"] =
-                    "Endpoint=sb://test/;SharedAccessKeyName=test;SharedAccessKey=test"
-            };
+                    ["Azure:BlobConnectionString"] = "UseDevelopmentStorage=true",
+                    ["Azure:ServiceBusConnectionString"] =
+                        "Endpoint=sb://test/;SharedAccessKeyName=test;SharedAccessKey=test"
+                });
+            });
 
-            cfg.AddInMemoryCollection(settings);
-        });
+            builder.ConfigureServices(services =>
+            {
+                // DB
+                services.RemoveAll(typeof(DbContextOptions<DriverLedgerDbContext>));
+                services.AddDbContext<DriverLedgerDbContext>(opt =>
+                    opt.UseSqlServer(_connectionString));
 
-        builder.ConfigureServices(services =>
+                // Blob storage (test-friendly)
+                services.RemoveAll<IBlobStorage>();
+                services.AddSingleton<IBlobStorage, InMemoryBlobStorage>();
+
+                // Messaging (capture)
+                services.RemoveAll<IMessagePublisher>();
+                services.AddSingleton<InMemoryMessagePublisher>();
+                services.AddSingleton<IMessagePublisher>(sp => sp.GetRequiredService<InMemoryMessagePublisher>());
+
+                // Receipt extraction (fake)
+                services.RemoveAll<IReceiptExtractor>();
+                services.AddSingleton<IReceiptExtractor, FakeReceiptExtractor>();
+            });
+        }
+
+        // xUnit calls this before running tests that use this fixture
+        public async Task InitializeAsync()
         {
-            // -------------------------------
-            // DATABASE (real SQL for tests)
-            // -------------------------------
-            services.RemoveAll(typeof(DbContextOptions<DriverLedgerDbContext>));
+            using var scope = Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<DriverLedgerDbContext>();
+            await db.Database.MigrateAsync();
+        }
 
-            services.AddDbContext<DriverLedgerDbContext>(opt =>
-                opt.UseSqlServer(_connectionString));
+        Task IAsyncLifetime.DisposeAsync() => base.DisposeAsync().AsTask();
 
-            // -------------------------------
-            // MESSAGING (NO-OP for tests)
-            // -------------------------------
-            // Prevent Azure Service Bus calls during integration tests
-            services.RemoveAll<IMessagePublisher>();
-            services.AddScoped<IMessagePublisher, NoOpMessagePublisher>();
-        });
     }
+
 }
+

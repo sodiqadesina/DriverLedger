@@ -1,7 +1,9 @@
 using DriverLedger.Application.Auditing;
+using DriverLedger.Application.Common;
 using DriverLedger.Application.Messaging;
-using DriverLedger.Infrastructure.Messaging;
 using DriverLedger.Application.Receipts.Messages;
+using DriverLedger.Infrastructure.Messaging;
+using Microsoft.AspNetCore.Mvc;
 
 namespace DriverLedger.Api.Modules.Receipts
 {
@@ -10,6 +12,31 @@ namespace DriverLedger.Api.Modules.Receipts
         public static void MapReceiptEndpoints(WebApplication app)
         {
             var group = app.MapGroup("/receipts").WithTags("Receipts").RequireAuthorization("RequireDriver");
+
+            group.MapGet("/", async (
+            [FromQuery] string? status,
+            DriverLedgerDbContext db,
+            CancellationToken ct) =>
+            {
+                var q = db.Receipts.AsNoTracking();
+
+                if (!string.IsNullOrWhiteSpace(status))
+                    q = q.Where(r => r.Status == status);
+
+                var items = await q
+                    .OrderByDescending(r => r.Id) 
+                    .Select(r => new
+                    {
+                        r.Id,
+                        r.Status,
+                        r.FileObjectId,
+                        r.CreatedAt 
+                    })
+                    .ToListAsync(ct);
+
+                return Results.Ok(items);
+            });
+
 
             group.MapPost("/", async (CreateReceiptRequest req, DriverLedgerDbContext db, HttpContext ctx, CancellationToken ct) =>
             {
@@ -70,7 +97,67 @@ namespace DriverLedger.Api.Modules.Receipts
 
                 return Results.Ok(new { receiptId = receipt.Id, status = receipt.Status });
             });
+
+            group.MapPost("/receipts/{id:guid}/review/resolve", 
+            async (
+            Guid id,
+            ResolveReceiptReviewRequest req,
+            DriverLedgerDbContext db,
+            IMessagePublisher publisher,
+            IRequestContext requestContext,
+            CancellationToken ct) =>
+            {
+                var receipt = await db.Receipts.SingleOrDefaultAsync(r => r.Id == id, ct);
+                if (receipt is null) return Results.NotFound();
+
+                var review = await db.ReceiptReviews.SingleOrDefaultAsync(x => x.ReceiptId == id, ct);
+                if (review is null) return Results.NotFound(new { message = "No review exists for this receipt." });
+
+                review.ResolutionJson = req.ResolutionJson;
+                review.ResolvedAt = DateTimeOffset.UtcNow;
+
+                // If JWT sub is a GUID, persist it
+                var userId = requestContext.UserId;
+                if (!string.IsNullOrWhiteSpace(userId) && Guid.TryParse(userId, out var userGuid))
+                    review.ResolvedByUserId = userGuid;
+
+                if (req.Resubmit)
+                {
+                    receipt.Status = "Processing";
+
+                    // correlation: if you want, reuse the request correlation
+                    var correlationId = requestContext.CorrelationId ?? Guid.NewGuid().ToString("N");
+
+                    var envelope = new DriverLedger.Application.Messaging.MessageEnvelope<DriverLedger.Application.Receipts.Messages.ReceiptReceived>(
+                        MessageId: Guid.NewGuid().ToString("N"),
+                        Type: "receipt.received.v1",
+                        OccurredAt: DateTimeOffset.UtcNow,
+                        TenantId: receipt.TenantId,
+                        CorrelationId: correlationId,
+                        Data: new DriverLedger.Application.Receipts.Messages.ReceiptReceived(receipt.Id, receipt.FileObjectId)
+                    );
+
+                    await publisher.PublishAsync("q.receipt.received", envelope, ct);
+                }
+                else
+                {
+                    receipt.Status = "ReadyForPosting";
+                }
+
+                await db.SaveChangesAsync(ct);
+
+                return Results.Ok(new
+                {
+                    receiptId = receipt.Id,
+                    receiptStatus = receipt.Status,
+                    resolvedBy = userId
+                });
+            });
+
+
         }
+
+
 
         public sealed record CreateReceiptRequest(Guid FileObjectId);
         

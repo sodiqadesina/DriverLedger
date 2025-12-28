@@ -212,6 +212,171 @@ namespace DriverLedger.Infrastructure.Persistence.Migrations
                     b.ToTable("UserRoles", (string)null);
                 });
 
+            modelBuilder.Entity("DriverLedger.Domain.Ledger.LedgerEntry", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("CorrelationId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateOnly>("EntryDate")
+                        .HasColumnType("date");
+
+                    b.Property<string>("PostedByType")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<Guid?>("PostedByUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("SourceId")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<string>("SourceType")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "EntryDate");
+
+                    b.HasIndex("TenantId", "SourceType", "SourceId")
+                        .IsUnique();
+
+                    b.ToTable("LedgerEntries");
+                });
+
+            modelBuilder.Entity("DriverLedger.Domain.Ledger.LedgerLine", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("AccountCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<Guid>("CategoryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal>("DeductiblePct")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("GstHst")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<Guid>("LedgerEntryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Memo")
+                        .HasMaxLength(400)
+                        .HasColumnType("nvarchar(400)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LedgerEntryId");
+
+                    b.ToTable("LedgerLines");
+                });
+
+            modelBuilder.Entity("DriverLedger.Domain.Ledger.LedgerSourceLink", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("FileObjectId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("LedgerLineId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("ReceiptId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("StatementLineId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("FileObjectId");
+
+                    b.HasIndex("ReceiptId");
+
+                    b.HasIndex("StatementLineId");
+
+                    b.HasIndex("LedgerLineId", "ReceiptId", "StatementLineId", "FileObjectId")
+                        .IsUnique()
+                        .HasFilter("[ReceiptId] IS NOT NULL AND [StatementLineId] IS NOT NULL AND [FileObjectId] IS NOT NULL");
+
+                    b.ToTable("LedgerSourceLinks", (string)null);
+                });
+
+            modelBuilder.Entity("DriverLedger.Domain.Notifications.Notification", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("DataJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTimeOffset?>("ReadAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Severity")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CreatedAt");
+
+                    b.ToTable("Notifications");
+                });
+
             modelBuilder.Entity("DriverLedger.Domain.Ops.ProcessingJob", b =>
                 {
                     b.Property<Guid>("Id")
@@ -256,6 +421,45 @@ namespace DriverLedger.Infrastructure.Persistence.Migrations
                     b.ToTable("ProcessingJobs", (string)null);
                 });
 
+            modelBuilder.Entity("DriverLedger.Domain.Receipts.Extraction.ReceiptExtraction", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal>("Confidence")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTimeOffset>("ExtractedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("ModelVersion")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("NormalizedFieldsJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("RawJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<Guid>("ReceiptId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ReceiptId");
+
+                    b.HasIndex("TenantId", "ReceiptId", "ExtractedAt");
+
+                    b.ToTable("ReceiptExtractions");
+                });
+
             modelBuilder.Entity("DriverLedger.Domain.Receipts.Receipt", b =>
                 {
                     b.Property<Guid>("Id")
@@ -281,6 +485,189 @@ namespace DriverLedger.Infrastructure.Persistence.Migrations
                     b.HasIndex("TenantId", "Status");
 
                     b.ToTable("Receipts", (string)null);
+                });
+
+            modelBuilder.Entity("DriverLedger.Domain.Receipts.Review.ReceiptReview", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("HoldReason")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("QuestionsJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<Guid>("ReceiptId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ResolutionJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTimeOffset?>("ResolvedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid?>("ResolvedByUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ReceiptId");
+
+                    b.HasIndex("TenantId", "ReceiptId");
+
+                    b.ToTable("ReceiptReviews");
+                });
+
+            modelBuilder.Entity("DriverLedger.Domain.Statements.Snapshots.LedgerSnapshot", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("AuthorityScore")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset>("CalculatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<decimal>("EstimatedPct")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("EvidencePct")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("PeriodKey")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<string>("PeriodType")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("TotalsJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "PeriodType", "PeriodKey")
+                        .IsUnique();
+
+                    b.ToTable("LedgerSnapshots");
+                });
+
+            modelBuilder.Entity("DriverLedger.Domain.Statements.Snapshots.SnapshotDetail", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal>("EstimatedPct")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal>("EvidencePct")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("MetricKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("SnapshotId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal>("Value")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SnapshotId", "MetricKey")
+                        .IsUnique();
+
+                    b.ToTable("SnapshotDetails");
+                });
+
+            modelBuilder.Entity("DriverLedger.Domain.Ledger.LedgerLine", b =>
+                {
+                    b.HasOne("DriverLedger.Domain.Ledger.LedgerEntry", "Entry")
+                        .WithMany("Lines")
+                        .HasForeignKey("LedgerEntryId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Entry");
+                });
+
+            modelBuilder.Entity("DriverLedger.Domain.Ledger.LedgerSourceLink", b =>
+                {
+                    b.HasOne("DriverLedger.Domain.Ledger.LedgerLine", "LedgerLine")
+                        .WithMany("SourceLinks")
+                        .HasForeignKey("LedgerLineId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("LedgerLine");
+                });
+
+            modelBuilder.Entity("DriverLedger.Domain.Receipts.Extraction.ReceiptExtraction", b =>
+                {
+                    b.HasOne("DriverLedger.Domain.Receipts.Receipt", "Receipt")
+                        .WithMany()
+                        .HasForeignKey("ReceiptId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Receipt");
+                });
+
+            modelBuilder.Entity("DriverLedger.Domain.Receipts.Review.ReceiptReview", b =>
+                {
+                    b.HasOne("DriverLedger.Domain.Receipts.Receipt", "Receipt")
+                        .WithMany()
+                        .HasForeignKey("ReceiptId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Receipt");
+                });
+
+            modelBuilder.Entity("DriverLedger.Domain.Statements.Snapshots.SnapshotDetail", b =>
+                {
+                    b.HasOne("DriverLedger.Domain.Statements.Snapshots.LedgerSnapshot", "Snapshot")
+                        .WithMany("Details")
+                        .HasForeignKey("SnapshotId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Snapshot");
+                });
+
+            modelBuilder.Entity("DriverLedger.Domain.Ledger.LedgerEntry", b =>
+                {
+                    b.Navigation("Lines");
+                });
+
+            modelBuilder.Entity("DriverLedger.Domain.Ledger.LedgerLine", b =>
+                {
+                    b.Navigation("SourceLinks");
+                });
+
+            modelBuilder.Entity("DriverLedger.Domain.Statements.Snapshots.LedgerSnapshot", b =>
+                {
+                    b.Navigation("Details");
                 });
 #pragma warning restore 612, 618
         }

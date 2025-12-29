@@ -5,6 +5,7 @@ using DriverLedger.Application.Receipts;
 using DriverLedger.Application.Receipts.Extraction;
 using DriverLedger.Infrastructure.Common;
 using DriverLedger.Infrastructure.Files;
+using DriverLedger.Infrastructure.Ledger;
 using DriverLedger.Infrastructure.Messaging;
 using DriverLedger.Infrastructure.Options;
 using DriverLedger.Infrastructure.Persistence;
@@ -28,23 +29,43 @@ var host = new HostBuilder()
         services.AddDbContext<DriverLedgerDbContext>(opt =>
             opt.UseSqlServer(ctx.Configuration.GetConnectionString("Sql")));
 
-        // Azure clients
-        services.AddSingleton(_ => new ServiceBusClient(ctx.Configuration["Azure:ServiceBusConnectionString"]));
-        services.AddSingleton(_ => new BlobServiceClient(ctx.Configuration["Azure:BlobConnectionString"]));
+        // Azure clients (with checks)
+        services.AddSingleton(_ =>
+        {
+            var cs = ctx.Configuration["Azure:ServiceBusConnectionString"];
+            if (string.IsNullOrWhiteSpace(cs))
+                throw new InvalidOperationException("Missing configuration: Azure:ServiceBusConnectionString");
+            return new ServiceBusClient(cs);
+        });
+
+        services.AddSingleton(_ =>
+        {
+            var cs = ctx.Configuration["Azure:BlobConnectionString"];
+            if (string.IsNullOrWhiteSpace(cs))
+                throw new InvalidOperationException("Missing configuration: Azure:BlobConnectionString");
+            return new BlobServiceClient(cs);
+        });
 
         // Infra services
         services.AddSingleton<IBlobStorage, BlobStorage>();
-        services.AddSingleton<IMessagePublisher, ServiceBusPublisher>();
-        services.AddSingleton<ServiceBusPublisher>(); // your handler uses concrete type
+
+        // single instance for both concrete + interface
+        services.AddSingleton<ServiceBusPublisher>();
+        services.AddSingleton<IMessagePublisher>(sp => sp.GetRequiredService<ServiceBusPublisher>());
+
         services.AddScoped<SnapshotCalculator>();
 
-        // Receipt extractor: REAL
-        services.Configure<DocumentIntelligenceOptions>(ctx.Configuration.GetSection("Azure:DocumentIntelligence"));
-        services.AddSingleton<IReceiptExtractor, AzureDocumentIntelligenceReceiptExtractor>();
+        // Receipt extractor: REAL (options + scoped)
+        services.Configure<DocumentIntelligenceOptions>(
+            ctx.Configuration.GetSection("Azure:DocumentIntelligence"));
+
+        services.AddScoped<IReceiptExtractor, AzureDocumentIntelligenceReceiptExtractor>();
 
         // Handlers
         services.AddScoped<IReceiptReceivedHandler, ReceiptReceivedHandler>();
         services.AddScoped<ReceiptExtractionHandler>();
+        services.AddScoped<ReceiptToLedgerPostingHandler>();
+
     })
     .Build();
 

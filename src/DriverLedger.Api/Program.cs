@@ -17,6 +17,7 @@ using DriverLedger.Infrastructure.Common;
 using DriverLedger.Infrastructure.Files;
 using DriverLedger.Infrastructure.Ledger;
 using DriverLedger.Infrastructure.Messaging;
+using DriverLedger.Infrastructure.Options;
 using DriverLedger.Infrastructure.Persistence.Interceptors;
 using DriverLedger.Infrastructure.Receipts;
 using DriverLedger.Infrastructure.Receipts.Extraction;
@@ -50,6 +51,12 @@ builder.Configuration["Azure:BlobConnectionString"] = Env("DRIVERLEDGER_BLOB");
 if (!string.IsNullOrWhiteSpace(Env("DRIVERLEDGER_SB")))
 builder.Configuration["Azure:ServiceBusConnectionString"] = Env("DRIVERLEDGER_SB");
 
+// OPTIONAL (if you use env vars in CI)
+if (!string.IsNullOrWhiteSpace(Env("DRIVERLEDGER_DI_ENDPOINT")))
+builder.Configuration["Azure:DocumentIntelligence:Endpoint"] = Env("DRIVERLEDGER_DI_ENDPOINT");
+if (!string.IsNullOrWhiteSpace(Env("DRIVERLEDGER_DI_KEY")))
+builder.Configuration["Azure:DocumentIntelligence:ApiKey"] = Env("DRIVERLEDGER_DI_KEY");
+
 // -----------------------------
 // EF Core
 // -----------------------------
@@ -58,8 +65,6 @@ builder.Services.AddDbContext<DriverLedgerDbContext>(opt =>
 opt.UseSqlServer(builder.Configuration.GetConnectionString("Sql"));
 opt.AddInterceptors(new LedgerImmutabilityInterceptor());
 });
-
-
 
 // -----------------------------
 // Cross-cutting services
@@ -81,9 +86,11 @@ builder.Services.AddScoped<ReceiptExtractionHandler>();
 builder.Services.AddScoped<ReceiptToLedgerPostingHandler>();
 builder.Services.AddScoped<SnapshotCalculator>();
 
-// Extractor wiring (Fake for now: local + tests)
-// Later swap to Azure Document Intelligence implementation.
-builder.Services.AddScoped<IReceiptExtractor, FakeReceiptExtractor>();
+// Document Intelligence options + extractor
+builder.Services.Configure<DocumentIntelligenceOptions>(
+    builder.Configuration.GetSection("Azure:DocumentIntelligence"));
+
+builder.Services.AddScoped<IReceiptExtractor, AzureDocumentIntelligenceReceiptExtractor>();
 
 // -----------------------------
 // Azure clients
@@ -162,19 +169,18 @@ builder.Services.AddScoped<TenantScopeMiddleware>();
 // -----------------------------
 // API essentials
 // -----------------------------
-builder.Services.AddProblemDetails(); // produces RFC7807 ProblemDetails
+builder.Services.AddProblemDetails();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-
-//  basic health checks
 builder.Services.AddHealthChecks();
+
 // -----------------------------
 // Build
 // -----------------------------
 var app = builder.Build();
 
 // -----------------------------
-// Global exception handler → ProblemDetails (nice for prod + tests)
+// Global exception handler → ProblemDetails
 // -----------------------------
 app.UseExceptionHandler(errorApp =>
 {
@@ -197,13 +203,10 @@ await context.Response.WriteAsJsonAsync(pd);
 
 if (app.Environment.IsDevelopment() || app.Environment.IsEnvironment("Testing"))
 {
-    using var scope = app.Services.CreateScope();
-    var db = scope.ServiceProvider.GetRequiredService<DriverLedgerDbContext>();
-
-    // Creates DB if missing + applies migrations
-    db.Database.Migrate();
+using var scope = app.Services.CreateScope();
+var db = scope.ServiceProvider.GetRequiredService<DriverLedgerDbContext>();
+db.Database.Migrate();
 }
-
 
 app.UseSwagger();
 app.UseSwaggerUI();
@@ -228,4 +231,4 @@ ApiLedger.MapLedger(app);
 
 app.Run();
 
-public partial class Program { } // for integration tests
+public partial class Program { }

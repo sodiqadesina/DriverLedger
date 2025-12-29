@@ -130,6 +130,7 @@ namespace DriverLedger.Infrastructure.Persistence
                 b.HasIndex(x => new { x.TenantId, x.ReceiptId, x.ExtractedAt });
                 b.Property(x => x.RawJson).HasColumnType("nvarchar(max)");
                 b.Property(x => x.NormalizedFieldsJson).HasColumnType("nvarchar(max)");
+                b.Property(x => x.Confidence).HasPrecision(5, 4);
             });
 
             // Receipt Review
@@ -155,6 +156,9 @@ namespace DriverLedger.Infrastructure.Persistence
                 b.HasIndex(x => x.LedgerEntryId);
                 b.Property(x => x.Memo).HasMaxLength(400);
                 b.Property(x => x.AccountCode).HasMaxLength(64);
+                b.Property(x => x.Amount).HasPrecision(18, 2);
+                b.Property(x => x.GstHst).HasPrecision(18, 2);
+                b.Property(x => x.DeductiblePct).HasPrecision(5, 4);
             });
 
             modelBuilder.Entity<LedgerSourceLink>(b =>

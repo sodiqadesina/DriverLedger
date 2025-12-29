@@ -21,19 +21,32 @@ namespace DriverLedger.Functions.Receipts
         }
 
         [Function(nameof(ReceiptExtractedFunction))]
-        public async Task Run(
-            [ServiceBusTrigger("q.receipt.extracted", Connection = "Azure:ServiceBusConnectionString")]
-        string messageJson,
-            CancellationToken ct)
+        public Task Run(
+     [ServiceBusTrigger("q.receipt.extracted", Connection = "Azure:ServiceBusConnectionString")]
+    string messageJson,
+     CancellationToken ct)
         {
             var envelope = JsonSerializer.Deserialize<MessageEnvelope<ReceiptExtractedV1>>(messageJson, JsonOpts);
             if (envelope is null)
             {
                 _log.LogError("Invalid receipt.extracted payload.");
-                return;
+                return Task.CompletedTask;
             }
 
-            await _handler.HandleAsync(envelope, ct);
+            using var scope = _log.BeginScope(new Dictionary<string, object?>
+            {
+                ["tenantId"] = envelope.TenantId,
+                ["correlationId"] = envelope.CorrelationId,
+                ["messageId"] = envelope.MessageId,
+                ["receiptId"] = envelope.Data.ReceiptId,
+                ["isHold"] = envelope.Data.IsHold
+            });
+
+            _log.LogInformation(
+                "receipt.extracted consumed for analytics only. Posting is handled by receipt.ready/receipt.hold workflows.");
+
+            return Task.CompletedTask;
         }
+
     }
 }

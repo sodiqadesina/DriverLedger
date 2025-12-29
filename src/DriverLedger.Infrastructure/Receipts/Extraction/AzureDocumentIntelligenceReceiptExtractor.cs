@@ -13,12 +13,11 @@ namespace DriverLedger.Infrastructure.Receipts.Extraction
 
     public sealed class AzureDocumentIntelligenceReceiptExtractor : IReceiptExtractor
     {
-        private const string ModelId = "prebuilt-receipt";
-
         private readonly DocumentAnalysisClient _client;
         private readonly ILogger<AzureDocumentIntelligenceReceiptExtractor> _logger;
+        private readonly string _modelId;
 
-        public string ModelVersion => ModelId;
+        public string ModelVersion => _modelId;
 
         public AzureDocumentIntelligenceReceiptExtractor(
             IOptions<DocumentIntelligenceOptions> options,
@@ -27,10 +26,13 @@ namespace DriverLedger.Infrastructure.Receipts.Extraction
             _logger = logger;
 
             var o = options.Value;
+
             if (string.IsNullOrWhiteSpace(o.Endpoint))
                 throw new InvalidOperationException("Azure:DocumentIntelligence:Endpoint is missing.");
             if (string.IsNullOrWhiteSpace(o.ApiKey))
                 throw new InvalidOperationException("Azure:DocumentIntelligence:ApiKey is missing.");
+
+            _modelId = string.IsNullOrWhiteSpace(o.ModelId) ? "prebuilt-receipt" : o.ModelId.Trim();
 
             _client = new DocumentAnalysisClient(new Uri(o.Endpoint), new AzureKeyCredential(o.ApiKey));
         }
@@ -40,67 +42,89 @@ namespace DriverLedger.Infrastructure.Receipts.Extraction
             if (file is null) throw new ArgumentNullException(nameof(file));
             if (file.CanSeek) file.Position = 0;
 
-            _logger.LogInformation("Analyzing receipt via Azure Document Intelligence ({ModelId})", ModelId);
+            _logger.LogInformation("Analyzing receipt via Azure Document Intelligence ({ModelId})", _modelId);
 
             AnalyzeDocumentOperation op = await _client.AnalyzeDocumentAsync(
                 WaitUntil.Completed,
-                ModelId,
+                _modelId,
                 file,
                 cancellationToken: ct);
 
             AnalyzeResult result = op.Value;
             var doc = result.Documents.FirstOrDefault();
 
-            // 1) RawJson for audit
-            var rawJson = JsonSerializer.Serialize(result);
+            // Stable “raw” projection (safer than serializing AnalyzeResult directly)
+            var rawJson = BuildRawProjectionJson(result, doc);
 
-            // 2) Core normalized fields used for posting & HOLD rules
-            var vendor = GetString(doc, "MerchantName")
-                         ?? GetString(doc, "MerchantAddress") // fallback
-                         ?? null;
+            // Core fields (with fallbacks)
+            var vendor =
+                GetFirstString(doc, "MerchantName", "Merchant", "VendorName")
+                ?? GetFirstString(doc, "MerchantAddress", "MerchantPhoneNumber"); // last-resort fallback
 
             DateOnly? date = null;
-            var dt = GetDate(doc, "TransactionDate");
+            var dt = GetFirstDate(doc, "TransactionDate", "Date");
             if (dt is not null)
                 date = DateOnly.FromDateTime(dt.Value);
 
-            var total = GetMoneyAmount(doc, "Total");
-            var tax = GetMoneyAmount(doc, "TotalTax");
+            var total = GetFirstMoneyAmount(doc, "Total", "TotalAmount", "Amount");
+            var tax = GetFirstMoneyAmount(doc, "TotalTax", "Tax", "TaxAmount");
 
-            var currency = GetCurrency(doc, "Total")
-                           ?? GetCurrency(doc, "TotalTax")
-                           ?? "CAD";
+            // Currency: do NOT silently assume CAD in the extractor; preserve “unknown”
+            var currency =
+                GetFirstCurrency(doc, "Total", "TotalAmount", "TotalTax", "Tax")
+                ?? "CAD"; // If your app is Canada-only, this default is OK. Otherwise, consider leaving null + policy layer.
 
-            var confidence = ComputeConfidence(doc);
+            // DI confidence only (policy confidence stays in ReceiptConfidenceCalculator)
+            var diConfidence = ComputeDiConfidence(doc);
 
-            // 3) Extended normalized JSON (future-proofing)
-            var normalizedFields = BuildNormalizedFieldsJson(doc, currency);
-            var normalizedFieldsJson = JsonSerializer.Serialize(normalizedFields);
+            var normalizedFieldsJson = BuildNormalizedFieldsJson(doc, currency);
 
-            // IMPORTANT: match record positional order exactly
             return new NormalizedReceipt(
-                date,
-                vendor,
-                total,
-                tax,
-                currency,
-                confidence,
-                rawJson,
-                normalizedFieldsJson
+                Date: date,
+                Vendor: vendor,
+                Total: total,
+                Tax: tax,
+                Currency: currency,
+                Confidence: diConfidence,
+                RawJson: rawJson,
+                NormalizedFieldsJson: normalizedFieldsJson
             );
         }
 
-        // ---------------- Helpers ----------------
+        // ---------------- Raw Projection ----------------
 
-        private static decimal ComputeConfidence(AnalyzedDocument? doc)
+        private string BuildRawProjectionJson(AnalyzeResult result, AnalyzedDocument? doc)
+        {
+            // Keep small + stable: enough for audit/debugging without serialization pitfalls
+            var projection = new
+            {
+                modelId = _modelId,
+                createdOn = DateTime.UtcNow,
+                docCount = result.Documents.Count,
+                pageCount = result.Pages.Count,
+                fields = doc?.Fields.ToDictionary(
+                    kvp => kvp.Key,
+                    kvp => new
+                    {
+                        content = kvp.Value?.Content,
+                        confidence = kvp.Value?.Confidence
+                    })
+            };
+
+            return JsonSerializer.Serialize(projection);
+        }
+
+        // ---------------- Confidence ----------------
+
+        private static decimal ComputeDiConfidence(AnalyzedDocument? doc)
         {
             if (doc is null) return 0m;
 
-            // weighted by what's critical for posting
-            var cVendor = GetFieldConfidence(doc, "MerchantName");
-            var cDate = GetFieldConfidence(doc, "TransactionDate");
-            var cTotal = GetFieldConfidence(doc, "Total");
-            var cTax = GetFieldConfidence(doc, "TotalTax"); // lower weight
+            // Weighted on critical posting fields
+            var cVendor = GetFieldConfidence(doc, "MerchantName") ?? GetFieldConfidence(doc, "Merchant") ?? 0f;
+            var cDate = GetFieldConfidence(doc, "TransactionDate") ?? GetFieldConfidence(doc, "Date") ?? 0f;
+            var cTotal = GetFieldConfidence(doc, "Total") ?? GetFieldConfidence(doc, "TotalAmount") ?? 0f;
+            var cTax = GetFieldConfidence(doc, "TotalTax") ?? GetFieldConfidence(doc, "Tax") ?? 0f;
 
             decimal score =
                 (decimal)cVendor * 0.30m +
@@ -108,20 +132,58 @@ namespace DriverLedger.Infrastructure.Receipts.Extraction
                 (decimal)cTotal * 0.30m +
                 (decimal)cTax * 0.10m;
 
-            // clamp
             if (score < 0m) score = 0m;
             if (score > 1m) score = 1m;
             return score;
         }
 
-        private static float GetFieldConfidence(AnalyzedDocument doc, string fieldName)
+        private static float? GetFieldConfidence(AnalyzedDocument doc, string fieldName)
         {
-            if (!doc.Fields.TryGetValue(fieldName, out var f) || f is null)
-                return 0f;
-
-            return f.Confidence ?? 0f;
+            if (!doc.Fields.TryGetValue(fieldName, out var f) || f is null) return null;
+            return f.Confidence;
         }
 
+        // ---------------- Field helpers ----------------
+
+        private static string? GetFirstString(AnalyzedDocument? doc, params string[] fieldNames)
+        {
+            foreach (var name in fieldNames)
+            {
+                var s = GetString(doc, name);
+                if (!string.IsNullOrWhiteSpace(s)) return s;
+            }
+            return null;
+        }
+
+        private static DateTime? GetFirstDate(AnalyzedDocument? doc, params string[] fieldNames)
+        {
+            foreach (var name in fieldNames)
+            {
+                var d = GetDate(doc, name);
+                if (d is not null) return d;
+            }
+            return null;
+        }
+
+        private static decimal? GetFirstMoneyAmount(AnalyzedDocument? doc, params string[] fieldNames)
+        {
+            foreach (var name in fieldNames)
+            {
+                var m = GetMoneyAmount(doc, name);
+                if (m is not null) return m;
+            }
+            return null;
+        }
+
+        private static string? GetFirstCurrency(AnalyzedDocument? doc, params string[] fieldNames)
+        {
+            foreach (var name in fieldNames)
+            {
+                var c = GetCurrency(doc, name);
+                if (!string.IsNullOrWhiteSpace(c)) return c;
+            }
+            return null;
+        }
 
         private static string? GetString(AnalyzedDocument? doc, string fieldName)
         {
@@ -136,34 +198,32 @@ namespace DriverLedger.Infrastructure.Receipts.Extraction
             if (doc is null) return null;
             if (!doc.Fields.TryGetValue(fieldName, out var f) || f is null) return null;
 
-            // Version-safe: try typed parse first
             try
             {
-               
                 return f.Value.AsDate().DateTime;
             }
             catch
             {
-                // ignore and fall back
+                // fall back to parsing the content
             }
 
-            // Conservative fallback: try parse from content
             var s = f.Content?.Trim();
             if (string.IsNullOrWhiteSpace(s)) return null;
 
-            // Many receipts are yyyy-MM-dd or similar; try a broad parse
-            return DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var dt)
+            return DateTime.TryParse(
+                s,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeLocal,
+                out var dt)
                 ? dt
                 : null;
         }
-
 
         private static decimal? GetMoneyAmount(AnalyzedDocument? doc, string fieldName)
         {
             if (doc is null) return null;
             if (!doc.Fields.TryGetValue(fieldName, out var f) || f is null) return null;
 
-            // Version-safe: try typed currency
             try
             {
                 var cur = f.Value.AsCurrency();
@@ -171,10 +231,9 @@ namespace DriverLedger.Infrastructure.Receipts.Extraction
             }
             catch
             {
-                // ignore and fall back
+                // fall back to parsing content
             }
 
-            // Fallback: parse raw content
             var s = f.Content?.Trim();
             if (string.IsNullOrWhiteSpace(s)) return null;
 
@@ -185,10 +244,10 @@ namespace DriverLedger.Infrastructure.Receipts.Extraction
                 s,
                 NumberStyles.Number | NumberStyles.AllowDecimalPoint,
                 CultureInfo.InvariantCulture,
-                out var v
-            ) ? v : null;
+                out var v)
+                ? v
+                : null;
         }
-
 
         private static string? GetCurrency(AnalyzedDocument? doc, string fieldName)
         {
@@ -198,7 +257,6 @@ namespace DriverLedger.Infrastructure.Receipts.Extraction
             try
             {
                 var cur = f.Value.AsCurrency();
-                
                 return string.IsNullOrWhiteSpace(cur.Code) ? null : cur.Code.Trim();
             }
             catch
@@ -207,21 +265,21 @@ namespace DriverLedger.Infrastructure.Receipts.Extraction
             }
         }
 
+        // ---------------- NormalizedFieldsJson ----------------
 
-        private static object BuildNormalizedFieldsJson(AnalyzedDocument? doc, string currency)
+        private string BuildNormalizedFieldsJson(AnalyzedDocument? doc, string currency)
         {
-            // Keep this stable; your downstream can evolve without breaking the record
-            var merchantName = GetString(doc, "MerchantName");
-            var merchantPhone = GetString(doc, "MerchantPhoneNumber");
-            var merchantAddress = GetString(doc, "MerchantAddress");
-            var receiptType = GetString(doc, "ReceiptType");
-            var transactionTime = GetString(doc, "TransactionTime");
+            var merchantName = GetFirstString(doc, "MerchantName", "Merchant", "VendorName");
+            var merchantPhone = GetFirstString(doc, "MerchantPhoneNumber");
+            var merchantAddress = GetFirstString(doc, "MerchantAddress");
+            var receiptType = GetFirstString(doc, "ReceiptType");
+            var transactionTime = GetFirstString(doc, "TransactionTime");
 
             var items = ExtractItems(doc);
 
-            return new
+            var payload = new
             {
-                modelId = ModelId,
+                modelId = _modelId,
                 merchantName,
                 merchantPhone,
                 merchantAddress,
@@ -230,6 +288,8 @@ namespace DriverLedger.Infrastructure.Receipts.Extraction
                 currency,
                 items
             };
+
+            return JsonSerializer.Serialize(payload);
         }
 
         private static object[] ExtractItems(AnalyzedDocument? doc)
@@ -238,31 +298,17 @@ namespace DriverLedger.Infrastructure.Receipts.Extraction
             if (!doc.Fields.TryGetValue("Items", out var itemsField) || itemsField is null)
                 return Array.Empty<object>();
 
-            // Version-safe: attempt AsList without checking ValueType
             IReadOnlyList<DocumentField>? list;
-            try
-            {
-                list = itemsField.Value.AsList();
-            }
-            catch
-            {
-                return Array.Empty<object>();
-            }
+            try { list = itemsField.Value.AsList(); }
+            catch { return Array.Empty<object>(); }
 
             var outItems = new List<object>();
 
             foreach (var item in list)
             {
-                // Each item is typically a dictionary
                 IReadOnlyDictionary<string, DocumentField>? dict;
-                try
-                {
-                    dict = item.Value.AsDictionary();
-                }
-                catch
-                {
-                    continue;
-                }
+                try { dict = item.Value.AsDictionary(); }
+                catch { continue; }
 
                 dict.TryGetValue("Description", out var desc);
                 dict.TryGetValue("Quantity", out var qty);
@@ -279,6 +325,5 @@ namespace DriverLedger.Infrastructure.Receipts.Extraction
 
             return outItems.ToArray();
         }
-
     }
 }

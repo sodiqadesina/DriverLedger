@@ -1,3 +1,5 @@
+using DriverLedger.Application.Ledger.Commands;
+using DriverLedger.Infrastructure.Ledger;
 using Microsoft.AspNetCore.Mvc;
 
 namespace DriverLedger.Api.Modules.Ledger
@@ -8,8 +10,9 @@ namespace DriverLedger.Api.Modules.Ledger
         public static IEndpointRouteBuilder MapLedger(this IEndpointRouteBuilder app)
         {
             var group = app.MapGroup("/ledger")
-                .RequireAuthorization().WithTags("ledger")
-                .RequireAuthorization("RequireDriver"); ;
+                .RequireAuthorization()
+                .WithTags("ledger")
+                .RequireAuthorization("RequireDriver");
 
             // GET /ledger?periodType=monthly&periodKey=YYYY-MM
             group.MapGet("", GetLedgerForPeriod);
@@ -19,6 +22,12 @@ namespace DriverLedger.Api.Modules.Ledger
 
             // GET /ledger/audit?sourceType=Receipt&sourceId=...
             group.MapGet("/audit", GetLedgerAudit);
+
+            // POST /ledger/manual  (M1.3 CreateManualEntry)
+            group.MapPost("/manual", CreateManualEntry);
+
+            // POST /ledger/adjustments (M1.3 CreateAdjustment)
+            group.MapPost("/adjustments", CreateAdjustment);
 
             return app;
         }
@@ -63,7 +72,6 @@ namespace DriverLedger.Api.Modules.Ledger
 
             if (entry is null) return Results.NotFound();
 
-            // source links: join table (LedgerSourceLinks) - if mapped as owned/collection, include accordingly
             var lines = entry.Lines.Select(l => new
             {
                 l.Id,
@@ -95,7 +103,6 @@ namespace DriverLedger.Api.Modules.Ledger
             DriverLedgerDbContext db,
             CancellationToken ct)
         {
-            // For receipts, SourceId is receiptId string("D")
             var events = await db.AuditEvents
                 .AsNoTracking()
                 .Where(a => a.EntityType == "LedgerEntry" || a.EntityType == "Receipt")
@@ -116,6 +123,39 @@ namespace DriverLedger.Api.Modules.Ledger
 
             return Results.Ok(new { sourceType, sourceId, events });
         }
+
+        // ---------------- Writes (M1.3 “public use-cases”) ----------------
+
+        private static async Task<IResult> CreateManualEntry(
+            ManualLedgerEntryRequest req,
+            HttpContext http,
+            ManualLedgerPostingHandler handler,
+            CancellationToken ct)
+        {
+            var correlationId =
+                (http.Items.TryGetValue("x-correlation-id", out var v) ? v?.ToString() : null)
+                ?? Guid.NewGuid().ToString("N");
+
+            var result = await handler.CreateManualAsync(req, correlationId, ct);
+            return Results.Ok(result);
+        }
+
+        private static async Task<IResult> CreateAdjustment(
+            AdjustmentRequest req,
+            HttpContext http,
+            AdjustmentLedgerPostingHandler handler,
+            CancellationToken ct)
+        {
+            var correlationId =
+                (http.Items.TryGetValue("x-correlation-id", out var v) ? v?.ToString() : null)
+                ?? Guid.NewGuid().ToString("N");
+
+            var result = await handler.CreateAdjustmentAsync(req, correlationId, ct);
+            return Results.Ok(result);
+        }
+
+
+        // ---------------- Helpers ----------------
 
         private static string NormalizePeriodType(string periodType)
         {

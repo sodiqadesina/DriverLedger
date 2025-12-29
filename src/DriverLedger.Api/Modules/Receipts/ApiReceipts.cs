@@ -98,7 +98,7 @@ namespace DriverLedger.Api.Modules.Receipts
                 return Results.Ok(new { receiptId = receipt.Id, status = receipt.Status });
             });
 
-            group.MapPost("/receipts/{id:guid}/review/resolve", 
+            group.MapPost("/{id:guid}/review/resolve", 
             async (
             Guid id,
             ResolveReceiptReviewRequest req,

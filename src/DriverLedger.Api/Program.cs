@@ -78,6 +78,9 @@ builder.Services.AddScoped<IAuditWriter, AuditWriter>();
 
 // Foundation "gate" handler (already exists)
 builder.Services.AddScoped<IReceiptReceivedHandler, ReceiptReceivedHandler>();
+builder.Services.AddScoped<ManualLedgerPostingHandler>();
+builder.Services.AddScoped<AdjustmentLedgerPostingHandler>();
+
 
 // -----------------------------
 // M1 Pipeline: Extraction + Posting + Snapshots

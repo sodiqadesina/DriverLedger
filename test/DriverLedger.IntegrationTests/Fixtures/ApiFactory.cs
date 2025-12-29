@@ -70,7 +70,23 @@ namespace DriverLedger.IntegrationTests
             await db.Database.MigrateAsync();
         }
 
-        Task IAsyncLifetime.DisposeAsync() => base.DisposeAsync().AsTask();
+        public override async ValueTask DisposeAsync()
+        {
+            try
+            {
+                using var scope = Services.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<DriverLedgerDbContext>();
+                await db.Database.EnsureDeletedAsync();
+            }
+            catch
+            {
+                // ignore cleanup failures
+            }
+
+            await base.DisposeAsync();
+        }
+
+        Task IAsyncLifetime.DisposeAsync() => DisposeAsync().AsTask();
 
     }
 

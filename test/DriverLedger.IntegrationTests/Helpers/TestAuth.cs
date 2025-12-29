@@ -17,7 +17,12 @@ namespace DriverLedger.IntegrationTests.Helpers
                 Password = "P@ssw0rd123!"
             });
 
-            register.EnsureSuccessStatusCode();
+            if (!register.IsSuccessStatusCode)
+            {
+                var txt = await register.Content.ReadAsStringAsync();
+                throw new Xunit.Sdk.XunitException($"Register failed: {(int)register.StatusCode} {register.StatusCode}\n{txt}");
+            }
+
 
             var body = await register.Content.ReadFromJsonAsync<TokenResponse>();
             body.Should().NotBeNull();

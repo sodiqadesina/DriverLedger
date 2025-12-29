@@ -59,6 +59,8 @@ opt.UseSqlServer(builder.Configuration.GetConnectionString("Sql"));
 opt.AddInterceptors(new LedgerImmutabilityInterceptor());
 });
 
+
+
 // -----------------------------
 // Cross-cutting services
 // -----------------------------
@@ -192,6 +194,16 @@ context.Response.ContentType = "application/problem+json";
 await context.Response.WriteAsJsonAsync(pd);
 });
 });
+
+if (app.Environment.IsDevelopment() || app.Environment.IsEnvironment("Testing"))
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<DriverLedgerDbContext>();
+
+    // Creates DB if missing + applies migrations
+    db.Database.Migrate();
+}
+
 
 app.UseSwagger();
 app.UseSwaggerUI();

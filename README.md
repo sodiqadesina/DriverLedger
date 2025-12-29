@@ -145,18 +145,154 @@ DriverLedger.Application.Tests
 
 ---
 
-## 🚧 Project Status
+##  Core Domain Model (Current DB Schema)
+The DbContext currently defines the following tenant-scoped data model (with global query filters for tenant isolation): 7
 
-- Architecture and product scope defined
-- UI/UX design in progress (Figma)
-- Backend scaffolding in progress
-- This repository will evolve incrementally with:
-  - Domain modeling
-  - Event pipelines
-  - Tax calculation engines
-  - Frontend implementation
+- Identity / Tenant
+    - Users, Roles, UserRoles
+    
+    - DriverProfiles
 
----
+- Files
+    - FileObjects (blob metadata + hash)
+
+- Receipts
+    - Receipts
+    
+    - ReceiptExtractions
+    
+    - ReceiptReviews
+
+- Ledger (immutable)
+    - LedgerEntries
+    
+    - LedgerLines
+    
+    - LedgerSourceLinks (receipt/statement/file linkage)
+
+- Live Statement Snapshots
+    - LedgerSnapshots
+    
+    - SnapshotDetails
+
+- Ops / Auditing / Notifications
+    - ProcessingJobs (idempotency + job tracking)
+    
+    - AuditEvents (append-only audit trail)
+    
+    - Notifications
+
+Ledger immutability is enforced by an EF Core interceptor that blocks updates/deletes on ledger entries/lines. 10
+
+### API Surface (Current)
+- Auth
+    - POST /auth/register
+    
+    - POST /auth/login
+    
+    - GET /auth/me (authorized drivers)
+
+- Files
+    - POST /files (multipart upload, creates FileObject + audit)
+
+
+- Receipts
+    - GET /receipts?status=...
+    
+    - POST /receipts (create receipt from fileObject)
+    
+    - POST /receipts/{id}/submit (publishes receipt.received.v1)
+    
+    - POST /receipts/{id}/review/resolve (resubmit or ready-for-posting)
+
+
+- Ledger
+    - GET /ledger?periodType=monthly|ytd&periodKey=...
+    
+    - GET /ledger/{entryId}
+    
+    - GET /ledger/audit?sourceType=...&sourceId=...
+    
+    - POST /ledger/manual
+    
+    - POST /ledger/adjustments
+
+
+- Live Statement
+    - GET /live-statement?periodType=monthly|ytd&periodKey=...
+    
+    - GET /live-statement/timeline?periodType=monthly&year=YYYY
+    
+    - GET /live-statement/drilldown?metricKey=...&periodKey=...
+
+
+### Message Contracts & Pipelines (Current)
+
+Message Envelope
+- All Service Bus payloads share a versioned envelope with MessageId, Type, OccurredAt, TenantId, CorrelationId, and Data. 
+
+Receipt Pipeline
+- API publishes receipt.received.v1 to q.receipt.received. 
+
+- ReceiptReceivedFunction gate → idempotency + status transition → extraction. 
+
+- ReceiptExtractionHandler calls Azure Document Intelligence, persists ReceiptExtractions, decides HOLD vs Ready, emits:
+    
+    - receipt.extracted.v1
+    
+    - receipt.hold.v1 or receipt.ready.v1
+
+
+- ReceiptReadyFunction triggers ledger posting via ReceiptToLedgerPostingHandler. 
+
+- ReceiptHoldFunction logs hold events + idempotent processing. 
+
+Ledger Posting → Snapshot Pipeline
+    - Ledger posting emits ledger.posted.v1 to q.ledger.posted. 
+    - LedgerPostedFunction triggers SnapshotCalculator to recompute Monthly and YTD snapshots.
+
+Schemas / Contract Tests
+- JSON schemas exist for:
+
+    - receipt.received.v1
+    
+    - receipt.extracted.v1
+    
+    - ledger.posted.v1
+
+    - message-envelope.v1
+
+
+### Observability & Security
+Observability
+    - Application Insights configured in API and Functions. 
+    - Correlation IDs propagated by API middleware into logs and message envelopes. 
+    - Structured audit trail in AuditEvents for receipt lifecycle, ledger posting, snapshot updates. 
+
+### Security & Tenant Isolation
+- JWT auth with RBAC policies: RequireDriver, RequireAdmin. 2
+
+- Tenant isolation enforced through TenantScopeMiddleware + EF Core global query filters. 
+
+### Test Coverage (Current)
+Unit Tests
+    - Receipt confidence scoring
+    - HOLD evaluation rules
+    - Authority score computation
+    - Ledger immutability enforcement
+
+
+Integration Tests
+    - Receipt submit → Service Bus publish
+    - Extraction + posting idempotency
+    - Snapshot updates after ledger posting
+    - Tenant isolation & auth protections
+
+
+Contract Tests
+- Envelope schema validation
+- Event schema validation for receipt/ledger events
+
 
 ## 📌 Vision Statement
 

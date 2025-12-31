@@ -32,6 +32,18 @@ using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
+
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("Frontend", policy =>
+        policy
+            .WithOrigins("http://localhost:4200")
+            .AllowAnyHeader()
+            .AllowAnyMethod()
+            .AllowCredentials()
+    );
+});
+
 // -----------------------------
 // Observability
 // -----------------------------
@@ -182,6 +194,7 @@ builder.Services.AddHealthChecks();
 // -----------------------------
 var app = builder.Build();
 
+
 // -----------------------------
 // Global exception handler → ProblemDetails
 // -----------------------------
@@ -214,7 +227,10 @@ db.Database.Migrate();
 app.UseSwagger();
 app.UseSwaggerUI();
 
-app.UseHttpsRedirection();
+
+app.UseCors("Frontend");
+
+//app.UseHttpsRedirection();
 
 app.UseMiddleware<CorrelationMiddleware>();
 app.UseAuthentication();

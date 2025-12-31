@@ -1,0 +1,16 @@
+<div class="min-h-screen flex">
+  <!-- Sidebar -->
+  <dl-sidebar (ai)="openAi()"></dl-sidebar>
+
+  <!-- Main -->
+  <div class="flex-1 min-w-0">
+    <dl-topbar (ai)="openAi()"></dl-topbar>
+
+    <main class="px-6 py-6">
+      <router-outlet></router-outlet>
+    </main>
+  </div>
+
+  <!-- AI drawer -->
+  <dl-ai-drawer [open]="aiOpen" (close)="closeAi()"></dl-ai-drawer>
+</div>

@@ -1,0 +1,37 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "statement.parsed.v1",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+        "statementId",
+        "tenantId",
+        "provider",
+        "periodType",
+        "periodKey",
+        "lineCount",
+        "incomeTotal",
+        "feeTotal",
+        "taxTotal"
+    ],
+    "properties": {
+        "statementId": {
+            "type": "string",
+            "format": "uuid"
+        },
+        "tenantId": {
+            "type": "string",
+            "format": "uuid"
+        },
+        "provider": { "type": "string" },
+        "periodType": { "type": "string" },
+        "periodKey": { "type": "string" },
+        "lineCount": {
+            "type": "integer",
+            "minimum": 0
+        },
+        "incomeTotal": { "type": "number" },
+        "feeTotal": { "type": "number" },
+        "taxTotal": { "type": "number" }
+    }
+}

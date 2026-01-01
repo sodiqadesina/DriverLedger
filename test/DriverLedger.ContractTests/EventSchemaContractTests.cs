@@ -13,6 +13,9 @@ namespace DriverLedger.ContractTests
             ["receipt.received.v1"] = "receipt.received.v1.schema.json",
             ["receipt.extracted.v1"] = "receipt.extracted.v1.schema.json",
             ["ledger.posted.v1"] = "ledger.posted.v1.schema.json",
+            ["statement.received.v1"] = "statement.received.v1.schema.json",
+            ["statement.parsed.v1"] = "statement.parsed.v1.schema.json",
+
         };
 
         [Theory]
@@ -87,6 +90,40 @@ namespace DriverLedger.ContractTests
                 entryDate = DateTime.UtcNow.ToString("yyyy-MM-dd") // keep schema simple for now
             }
             ];
+
+            yield return
+            [
+                "statement.received.v1",
+                new
+                {
+                    statementId = Guid.NewGuid(),
+                    tenantId = Guid.NewGuid(),
+                    provider = "Uber",
+                    periodType = "Monthly",
+                    periodKey = "2025-01",
+                    fileObjectId = Guid.NewGuid(),
+                    periodStart = "2025-01-01",
+                    periodEnd = "2025-01-31"
+                }
+            ];
+
+            yield return
+            [
+                "statement.parsed.v1",
+                new
+                {
+                    statementId = Guid.NewGuid(),
+                    tenantId = Guid.NewGuid(),
+                    provider = "Uber",
+                    periodType = "Monthly",
+                    periodKey = "2025-01",
+                    lineCount = 12,
+                    incomeTotal = 1234.56,
+                    feeTotal = 100.00,
+                    taxTotal = 50.00
+                }
+            ];
+
         }
 
         private static async Task<NJsonSchema.JsonSchema> LoadSchemaAsync(string schemaFileName)

@@ -1,0 +1,41 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "statement.received.v1",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+        "statementId",
+        "tenantId",
+        "provider",
+        "periodType",
+        "periodKey",
+        "fileObjectId",
+        "periodStart",
+        "periodEnd"
+    ],
+    "properties": {
+        "statementId": {
+            "type": "string",
+            "format": "uuid"
+        },
+        "tenantId": {
+            "type": "string",
+            "format": "uuid"
+        },
+        "provider": { "type": "string" },
+        "periodType": { "type": "string" },
+        "periodKey": { "type": "string" },
+        "fileObjectId": {
+            "type": "string",
+            "format": "uuid"
+        },
+        "periodStart": {
+            "type": "string",
+            "format": "date"
+        },
+        "periodEnd": {
+            "type": "string",
+            "format": "date"
+        }
+    }
+}

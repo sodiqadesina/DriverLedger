@@ -1,8 +1,9 @@
 
 namespace DriverLedger.Domain.Ledger
 {
-    public sealed class LedgerSourceLink : Entity
+    public sealed class LedgerSourceLink : Entity, ITenantScoped
     {
+        public required Guid TenantId { get; set; }
         public required Guid LedgerLineId { get; set; }
         public LedgerLine LedgerLine { get; set; } = default!;
 

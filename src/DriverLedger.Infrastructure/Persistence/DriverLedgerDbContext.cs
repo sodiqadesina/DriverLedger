@@ -10,6 +10,7 @@ using DriverLedger.Domain.Ops;
 using DriverLedger.Domain.Receipts;
 using DriverLedger.Domain.Receipts.Extraction;
 using DriverLedger.Domain.Receipts.Review;
+using DriverLedger.Domain.Statements;
 using DriverLedger.Domain.Statements.Snapshots;
 
 namespace DriverLedger.Infrastructure.Persistence
@@ -41,6 +42,11 @@ namespace DriverLedger.Infrastructure.Persistence
         public DbSet<LedgerLine> LedgerLines => Set<LedgerLine>();
         public DbSet<LedgerSnapshot> LedgerSnapshots => Set<LedgerSnapshot>();
         public DbSet<SnapshotDetail> SnapshotDetails => Set<SnapshotDetail>();
+
+        public DbSet<Statement> Statements => Set<Statement>();
+        public DbSet<StatementLine> StatementLines => Set<StatementLine>();
+        public DbSet<ReconciliationRun> ReconciliationRuns => Set<ReconciliationRun>();
+        public DbSet<ReconciliationVariance> ReconciliationVariances => Set<ReconciliationVariance>();
 
         public DbSet<Notification> Notifications => Set<Notification>();
 
@@ -79,6 +85,7 @@ namespace DriverLedger.Infrastructure.Persistence
                 b.Property(x => x.PolicyJson).HasColumnType("nvarchar(max)");
                 b.HasIndex(x => x.TenantId).IsUnique();
                 b.Property(x => x.DefaultBusinessUsePct);
+                b.Property(x => x.DefaultBusinessUsePct).HasPrecision(5, 4);
             });
 
             // Files
@@ -193,12 +200,76 @@ namespace DriverLedger.Infrastructure.Persistence
             {
                 b.HasIndex(x => new { x.TenantId, x.PeriodType, x.PeriodKey }).IsUnique();
                 b.Property(x => x.TotalsJson).HasColumnType("nvarchar(max)");
+                b.Property(x => x.EvidencePct).HasPrecision(5, 4);
+                b.Property(x => x.EstimatedPct).HasPrecision(5, 4);
             });
 
             modelBuilder.Entity<SnapshotDetail>(b =>
             {
                 b.HasIndex(x => new { x.SnapshotId, x.MetricKey }).IsUnique();
                 b.Property(x => x.MetricKey).HasMaxLength(64);
+                b.Property(x => x.EvidencePct).HasPrecision(5, 4);
+                b.Property(x => x.EstimatedPct).HasPrecision(5, 4);
+                b.Property(x => x.Value).HasPrecision(18, 2);
+            });
+
+            // Statements
+            modelBuilder.Entity<Statement>(b =>
+            {
+                b.ToTable("Statements");
+                b.HasIndex(x => new { x.TenantId, x.Provider, x.PeriodType, x.PeriodKey }).IsUnique();
+                b.Property(x => x.Provider).HasMaxLength(50).IsRequired();
+                b.Property(x => x.PeriodType).HasMaxLength(20).IsRequired();
+                b.Property(x => x.PeriodKey).HasMaxLength(20).IsRequired();
+                b.Property(x => x.Status).HasMaxLength(30).IsRequired();
+                b.HasMany(x => x.Lines)
+                    .WithOne(x => x.Statement)
+                    .HasForeignKey(x => x.StatementId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<StatementLine>(b =>
+            {
+                b.ToTable("StatementLines");
+                b.HasIndex(x => new { x.TenantId, x.StatementId, x.LineDate });
+                b.Property(x => x.LineType).HasMaxLength(30).IsRequired();
+                b.Property(x => x.Description).HasMaxLength(400);
+                b.Property(x => x.Currency).HasMaxLength(3);
+                b.Property(x => x.Amount).HasPrecision(18, 2);
+                b.Property(x => x.TaxAmount).HasPrecision(18, 2);
+            });
+
+            // Reconciliation
+            modelBuilder.Entity<ReconciliationRun>(b =>
+            {
+                b.ToTable("ReconciliationRuns");
+                b.HasIndex(x => new { x.TenantId, x.Provider, x.PeriodType, x.PeriodKey }).IsUnique();
+                b.Property(x => x.Provider).HasMaxLength(50).IsRequired();
+                b.Property(x => x.PeriodType).HasMaxLength(20).IsRequired();
+                b.Property(x => x.PeriodKey).HasMaxLength(20).IsRequired();
+                b.Property(x => x.Status).HasMaxLength(30).IsRequired();
+                b.Property(x => x.MonthlyIncomeTotal).HasPrecision(18, 2);
+                b.Property(x => x.YearlyIncomeTotal).HasPrecision(18, 2);
+                b.Property(x => x.VarianceAmount).HasPrecision(18, 2);
+                b.HasOne<Statement>()
+                    .WithMany()
+                    .HasForeignKey(x => x.YearlyStatementId)
+                    .OnDelete(DeleteBehavior.Restrict);
+                b.HasMany(x => x.Variances)
+                    .WithOne(x => x.ReconciliationRun)
+                    .HasForeignKey(x => x.ReconciliationRunId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<ReconciliationVariance>(b =>
+            {
+                b.ToTable("ReconciliationVariances");
+                b.HasIndex(x => new { x.ReconciliationRunId, x.MetricKey }).IsUnique();
+                b.Property(x => x.MetricKey).HasMaxLength(64).IsRequired();
+                b.Property(x => x.MonthlyTotal).HasPrecision(18, 2);
+                b.Property(x => x.YearlyTotal).HasPrecision(18, 2);
+                b.Property(x => x.VarianceAmount).HasPrecision(18, 2);
+                b.Property(x => x.Notes).HasMaxLength(400);
             });
 
             // Notifications

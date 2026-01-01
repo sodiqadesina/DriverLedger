@@ -4,6 +4,7 @@ using DriverLedger.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DriverLedger.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(DriverLedgerDbContext))]
-    partial class DriverLedgerDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260101023324_M2_AddStatementsReconciliation")]
+    partial class M2_AddStatementsReconciliation
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -76,8 +79,7 @@ namespace DriverLedger.Infrastructure.Persistence.Migrations
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<decimal>("DefaultBusinessUsePct")
-                        .HasPrecision(5, 4)
-                        .HasColumnType("decimal(5,4)");
+                        .HasColumnType("decimal(18,2)");
 
                     b.Property<bool>("HstRegistered")
                         .HasColumnType("bit");
@@ -291,9 +293,6 @@ namespace DriverLedger.Infrastructure.Persistence.Migrations
                     b.Property<string>("Memo")
                         .HasMaxLength(400)
                         .HasColumnType("nvarchar(400)");
-
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uniqueidentifier");
 
                     b.HasKey("Id");
 
@@ -647,12 +646,10 @@ namespace DriverLedger.Infrastructure.Persistence.Migrations
                         .HasColumnType("datetimeoffset");
 
                     b.Property<decimal>("EstimatedPct")
-                        .HasPrecision(5, 4)
-                        .HasColumnType("decimal(5,4)");
+                        .HasColumnType("decimal(18,2)");
 
                     b.Property<decimal>("EvidencePct")
-                        .HasPrecision(5, 4)
-                        .HasColumnType("decimal(5,4)");
+                        .HasColumnType("decimal(18,2)");
 
                     b.Property<string>("PeriodKey")
                         .IsRequired()
@@ -684,12 +681,10 @@ namespace DriverLedger.Infrastructure.Persistence.Migrations
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<decimal>("EstimatedPct")
-                        .HasPrecision(5, 4)
-                        .HasColumnType("decimal(5,4)");
+                        .HasColumnType("decimal(18,2)");
 
                     b.Property<decimal>("EvidencePct")
-                        .HasPrecision(5, 4)
-                        .HasColumnType("decimal(5,4)");
+                        .HasColumnType("decimal(18,2)");
 
                     b.Property<string>("MetricKey")
                         .IsRequired()
@@ -703,7 +698,6 @@ namespace DriverLedger.Infrastructure.Persistence.Migrations
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<decimal>("Value")
-                        .HasPrecision(18, 2)
                         .HasColumnType("decimal(18,2)");
 
                     b.HasKey("Id");

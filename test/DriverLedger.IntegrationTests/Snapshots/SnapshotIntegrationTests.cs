@@ -77,6 +77,7 @@ namespace DriverLedger.IntegrationTests.Snapshots
 
                 db.LedgerLines.Add(new Domain.Ledger.LedgerLine // <-- adjust namespace/type
                 {
+                    TenantId = tenantId,
                     LedgerEntryId = ledgerEntryId,
                     CategoryId = Guid.NewGuid(),
                     Amount = 100m,

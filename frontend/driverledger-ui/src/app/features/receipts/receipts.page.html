@@ -1,0 +1,73 @@
+<div class="mb-4">
+  <div class="text-2xl font-semibold">Receipts (Evidence Vault)</div>
+  <div class="text-sm text-slate-500 mt-1">Upload and manage all business receipts</div>
+</div>
+
+<!-- search + actions -->
+<div class="flex items-center gap-3">
+  <div class="flex-1">
+    <input [(ngModel)]="q"
+           class="w-full border rounded-xl px-4 py-3 text-sm bg-slate-50"
+           placeholder="Search receipts..." />
+  </div>
+
+  <button class="px-4 py-2 rounded-xl border bg-white text-sm font-semibold hover:bg-slate-50">
+    Scan Receipt
+  </button>
+
+  <button class="px-4 py-2 rounded-xl bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700">
+    Upload File
+  </button>
+</div>
+
+<!-- tabs -->
+<div class="mt-4 flex gap-2">
+  <button (click)="tab='all'"
+          class="px-3 py-1.5 rounded-full text-sm border"
+          [ngClass]="tab==='all' ? 'bg-slate-900 text-white border-slate-900' : 'bg-white'">
+    All ({{ cards.length }})
+  </button>
+
+  <button (click)="tab='review'"
+          class="px-3 py-1.5 rounded-full text-sm border"
+          [ngClass]="tab==='review' ? 'bg-slate-900 text-white border-slate-900' : 'bg-white'">
+    Needs Review
+  </button>
+
+  <button (click)="tab='posted'"
+          class="px-3 py-1.5 rounded-full text-sm border"
+          [ngClass]="tab==='posted' ? 'bg-slate-900 text-white border-slate-900' : 'bg-white'">
+    Posted
+  </button>
+</div>
+
+<!-- grid -->
+<div class="mt-5 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+  <article *ngFor="let r of filtered" class="border rounded-2xl bg-white p-5">
+    <div class="flex items-start justify-between">
+      <div class="w-10 h-10 rounded-lg bg-slate-100"></div>
+      <span class="text-xs px-2 py-1 rounded-full" [ngClass]="pillClass(r.status)">
+        {{ r.status }}
+      </span>
+    </div>
+
+    <div class="mt-4 font-semibold">{{ r.merchant }}</div>
+    <div class="text-xs text-slate-500 mt-2">{{ r.date }}</div>
+
+    <div class="mt-6 text-2xl font-semibold">{{ r.amount }}</div>
+
+    <div class="mt-4 flex items-center justify-between">
+      <span *ngIf="r.category" class="text-xs px-2 py-1 rounded-full border bg-slate-50">{{ r.category }}</span>
+      <span class="text-xs text-slate-500">Confidence</span>
+    </div>
+
+    <div class="mt-2 flex items-center justify-between">
+      <div class="h-2 rounded-full bg-slate-200 w-[70%] overflow-hidden">
+        <div class="h-full bg-green-600" [style.width.%]="r.confidence"></div>
+      </div>
+      <div class="text-xs font-semibold" [ngClass]="r.confidence >= 80 ? 'text-green-600' : (r.confidence >= 55 ? 'text-amber-600' : 'text-red-600')">
+        {{ r.confidence }}%
+      </div>
+    </div>
+  </article>
+</div>

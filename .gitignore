@@ -5,3 +5,4 @@ obj/
 **/obj/
 appsettings.json/appsettings.json
 appsettings.*.json
+src/DriverLedger.Api/appsettings.json

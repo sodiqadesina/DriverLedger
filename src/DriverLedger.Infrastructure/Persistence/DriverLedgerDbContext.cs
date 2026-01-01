@@ -4,8 +4,13 @@ using DriverLedger.Domain.Common;
 using DriverLedger.Domain.Drivers;
 using DriverLedger.Domain.Files;
 using DriverLedger.Domain.Identity;
+using DriverLedger.Domain.Ledger;
+using DriverLedger.Domain.Notifications;
 using DriverLedger.Domain.Ops;
 using DriverLedger.Domain.Receipts;
+using DriverLedger.Domain.Receipts.Extraction;
+using DriverLedger.Domain.Receipts.Review;
+using DriverLedger.Domain.Statements.Snapshots;
 
 namespace DriverLedger.Infrastructure.Persistence
 {
@@ -28,6 +33,17 @@ namespace DriverLedger.Infrastructure.Persistence
         public DbSet<Receipt> Receipts => Set<Receipt>();
         public DbSet<ProcessingJob> ProcessingJobs => Set<ProcessingJob>();
         public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
+
+        public DbSet<ReceiptExtraction> ReceiptExtractions => Set<ReceiptExtraction>();
+        public DbSet<ReceiptReview> ReceiptReviews => Set<ReceiptReview>();
+
+        public DbSet<LedgerEntry> LedgerEntries => Set<LedgerEntry>();
+        public DbSet<LedgerLine> LedgerLines => Set<LedgerLine>();
+        public DbSet<LedgerSnapshot> LedgerSnapshots => Set<LedgerSnapshot>();
+        public DbSet<SnapshotDetail> SnapshotDetails => Set<SnapshotDetail>();
+
+        public DbSet<Notification> Notifications => Set<Notification>();
+
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -95,6 +111,7 @@ namespace DriverLedger.Infrastructure.Persistence
                 b.Property(x => x.Status).HasMaxLength(30).IsRequired();
             });
 
+            // Auditing
             modelBuilder.Entity<AuditEvent>(b =>
             {
                 b.ToTable("AuditEvents");
@@ -105,6 +122,93 @@ namespace DriverLedger.Infrastructure.Persistence
                 b.Property(x => x.EntityId).HasMaxLength(100).IsRequired();
                 b.Property(x => x.CorrelationId).HasMaxLength(100).IsRequired();
                 b.Property(x => x.MetadataJson).HasColumnType("nvarchar(max)");
+            });
+
+            // Receipt Extraction & Review
+            modelBuilder.Entity<ReceiptExtraction>(b =>
+            {
+                b.HasIndex(x => new { x.TenantId, x.ReceiptId, x.ExtractedAt });
+                b.Property(x => x.RawJson).HasColumnType("nvarchar(max)");
+                b.Property(x => x.NormalizedFieldsJson).HasColumnType("nvarchar(max)");
+                b.Property(x => x.Confidence).HasPrecision(5, 4);
+            });
+
+            // Receipt Review
+            modelBuilder.Entity<ReceiptReview>(b =>
+            {
+                b.HasIndex(x => new { x.TenantId, x.ReceiptId });
+                b.Property(x => x.QuestionsJson).HasColumnType("nvarchar(max)");
+                b.Property(x => x.ResolutionJson).HasColumnType("nvarchar(max)");
+            });
+
+            // Ledger
+            modelBuilder.Entity<LedgerEntry>(b =>
+            {
+                b.HasIndex(x => new { x.TenantId, x.EntryDate });
+                b.HasIndex(x => new { x.TenantId, x.SourceType, x.SourceId }).IsUnique();
+                b.Property(x => x.SourceType).HasMaxLength(50);
+                b.Property(x => x.PostedByType).HasMaxLength(20);
+                b.Property(x => x.CorrelationId).HasMaxLength(128);
+            });
+
+            modelBuilder.Entity<LedgerLine>(b =>
+            {
+                b.HasIndex(x => x.LedgerEntryId);
+                b.Property(x => x.Memo).HasMaxLength(400);
+                b.Property(x => x.AccountCode).HasMaxLength(64);
+                b.Property(x => x.Amount).HasPrecision(18, 2);
+                b.Property(x => x.GstHst).HasPrecision(18, 2);
+                b.Property(x => x.DeductiblePct).HasPrecision(5, 4);
+            });
+
+            modelBuilder.Entity<LedgerSourceLink>(b =>
+            {
+                b.ToTable("LedgerSourceLinks");
+
+                // Surrogate PK
+                b.HasKey(x => x.Id);
+
+                b.HasOne(x => x.LedgerLine)
+                    .WithMany(x => x.SourceLinks)
+                    .HasForeignKey(x => x.LedgerLineId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                // Optional FKs
+                b.Property(x => x.ReceiptId).IsRequired(false);
+                b.Property(x => x.StatementLineId).IsRequired(false);
+                b.Property(x => x.FileObjectId).IsRequired(false);
+
+                // Prevent duplicates (for M1: you’ll mostly use ReceiptId+FileObjectId)
+                b.HasIndex(x => new { x.LedgerLineId, x.ReceiptId, x.StatementLineId, x.FileObjectId })
+                    .IsUnique();
+
+                b.HasIndex(x => x.ReceiptId);
+                b.HasIndex(x => x.StatementLineId);
+                b.HasIndex(x => x.FileObjectId);
+            });
+
+
+
+            modelBuilder.Entity<LedgerSnapshot>(b =>
+            {
+                b.HasIndex(x => new { x.TenantId, x.PeriodType, x.PeriodKey }).IsUnique();
+                b.Property(x => x.TotalsJson).HasColumnType("nvarchar(max)");
+            });
+
+            modelBuilder.Entity<SnapshotDetail>(b =>
+            {
+                b.HasIndex(x => new { x.SnapshotId, x.MetricKey }).IsUnique();
+                b.Property(x => x.MetricKey).HasMaxLength(64);
+            });
+
+            // Notifications
+            modelBuilder.Entity<Notification>(b =>
+            {
+                b.HasIndex(x => new { x.TenantId, x.CreatedAt });
+                b.Property(x => x.DataJson).HasColumnType("nvarchar(max)");
+                b.Property(x => x.Type).HasMaxLength(64);
+                b.Property(x => x.Severity).HasMaxLength(16);
+                b.Property(x => x.Status).HasMaxLength(16);
             });
 
 
@@ -123,6 +227,7 @@ namespace DriverLedger.Infrastructure.Persistence
             }
         }
 
+        // Helper method to set the tenant filter
         private static void SetTenantFilter<TEntity>(ModelBuilder modelBuilder, DriverLedgerDbContext ctx)
             where TEntity : class, ITenantScoped
         {

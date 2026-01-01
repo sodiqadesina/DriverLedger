@@ -1,0 +1,37 @@
+<aside class="w-[280px] shrink-0 border-r bg-white min-h-screen flex flex-col">
+  <div class="px-6 py-5 border-b">
+    <div class="font-semibold text-lg">Driver Business OS</div>
+    <div class="text-xs text-slate-500 mt-1">Ontario</div>
+
+    <!-- Tax Year dropdown (visual only; wire later) -->
+    <div class="mt-4">
+      <button class="w-full flex items-center justify-between px-3 py-2 rounded-lg bg-slate-50 border">
+        <span class="text-sm font-medium">Tax Year 2025</span>
+        <span class="text-slate-500 text-xs">▾</span>
+      </button>
+    </div>
+  </div>
+
+  <nav class="px-3 py-3 flex-1 overflow-auto">
+    <a *ngFor="let it of items"
+       [routerLink]="it.route"
+       routerLinkActive="bg-slate-50 text-blue-700"
+       class="flex items-center justify-between gap-3 px-3 py-2 rounded-lg text-sm text-slate-700 hover:bg-slate-50">
+      <span class="flex items-center gap-3">
+        <span class="w-5 h-5 rounded bg-slate-100 inline-block"></span>
+        {{ it.label }}
+      </span>
+
+      <dl-nav-badge *ngIf="it.badgeText" [text]="it.badgeText"></dl-nav-badge>
+      <dl-nav-badge *ngIf="it.badgeCount" [count]="it.badgeCount"></dl-nav-badge>
+    </a>
+  </nav>
+
+  <div class="p-4 border-t">
+    <button (click)="ai.emit()"
+            class="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-3 text-sm font-semibold flex items-center justify-center gap-2">
+      <span class="w-4 h-4 rounded bg-white/20 inline-block"></span>
+      AI Assistant
+    </button>
+  </div>
+</aside>

@@ -2,20 +2,25 @@ using System.Text.Json;
 using DriverLedger.Application.Messaging;
 using DriverLedger.Application.Receipts;
 using DriverLedger.Application.Receipts.Messages;
-
+using DriverLedger.Infrastructure.Receipts;
 
 namespace DriverLedger.Functions.Receipts;
 
 public sealed class ReceiptReceivedFunction
 {
-    private readonly IReceiptReceivedHandler _handler;
+    private readonly IReceiptReceivedHandler _gate;
+    private readonly ReceiptExtractionHandler _extract;
     private readonly ILogger<ReceiptReceivedFunction> _log;
 
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
-    public ReceiptReceivedFunction(IReceiptReceivedHandler handler, ILogger<ReceiptReceivedFunction> log)
+    public ReceiptReceivedFunction(
+        IReceiptReceivedHandler gate,
+        ReceiptExtractionHandler extract,
+        ILogger<ReceiptReceivedFunction> log)
     {
-        _handler = handler;
+        _gate = gate;
+        _extract = extract;
         _log = log;
     }
 
@@ -33,7 +38,10 @@ public sealed class ReceiptReceivedFunction
             return;
         }
 
-        // Handler owns tenant scoping + idempotency + db writes + audit
-        await _handler.HandleAsync(envelope, ct);
+        // 1) Gate: idempotency + status transition + audit
+        await _gate.HandleAsync(envelope, ct);
+
+        // 2) Extraction: idempotent via ProcessingJobs jobType=receipt.extract
+        await _extract.HandleAsync(envelope, ct);
     }
 }

@@ -1,0 +1,63 @@
+<div *ngIf="open" class="fixed inset-0 z-50">
+  <!-- backdrop -->
+  <div class="absolute inset-0 bg-black/20" (click)="close.emit()"></div>
+
+  <!-- drawer -->
+  <section class="absolute right-0 top-0 h-full w-[420px] max-w-[90vw] bg-white border-l shadow-xl flex flex-col">
+    <div class="p-4 border-b flex items-start justify-between">
+      <div>
+        <div class="font-semibold">AI Assistant</div>
+        <div class="text-xs text-slate-500">Ask questions about your business</div>
+      </div>
+      <button class="text-sm text-slate-500 hover:text-slate-700" (click)="close.emit()">✕</button>
+    </div>
+
+    <div class="p-4 space-y-3 overflow-auto">
+      <div class="text-xs text-slate-500">Quick prompts:</div>
+      <div class="flex flex-wrap gap-2">
+        <button class="px-3 py-1.5 rounded-full border text-xs hover:bg-slate-50">What's missing?</button>
+        <button class="px-3 py-1.5 rounded-full border text-xs hover:bg-slate-50">Explain this number</button>
+        <button class="px-3 py-1.5 rounded-full border text-xs hover:bg-slate-50">Prepare audit pack</button>
+        <button class="px-3 py-1.5 rounded-full border text-xs hover:bg-slate-50">Show HST calculation</button>
+        <button class="px-3 py-1.5 rounded-full border text-xs hover:bg-slate-50">Check for errors</button>
+      </div>
+
+      <div class="border rounded-xl p-3 bg-slate-50 text-sm text-slate-700">
+        Hi! I can help you understand your financial data, find missing information, prepare audit documents,
+        and answer questions about tax compliance.
+      </div>
+
+      <!-- Example "Review Required" card shown in your screenshot -->
+      <div class="border rounded-xl p-4 bg-amber-50">
+        <div class="flex items-center justify-between">
+          <div class="font-semibold text-sm">AI Proposal</div>
+          <span class="text-xs px-2 py-1 rounded-full bg-white border">Review Required</span>
+        </div>
+        <p class="text-sm text-slate-700 mt-2">
+          I found 3 receipts that could be categorized as "Vehicle Maintenance". This would add $247.50 to your eligible
+          expenses.
+        </p>
+
+        <div class="mt-3 border rounded-lg bg-white p-3 text-sm">
+          <div class="flex justify-between"><span class="text-slate-500">Records affected:</span><span>3</span></div>
+          <div class="flex justify-between mt-1"><span class="text-slate-500">Expense increase:</span><span class="text-green-600 font-semibold">+$247.50</span></div>
+          <div class="flex justify-between mt-1"><span class="text-slate-500">Risk level:</span><span class="px-2 py-0.5 rounded-full bg-green-100 text-green-700 text-xs">Low</span></div>
+        </div>
+
+        <div class="mt-3 flex gap-2">
+          <button class="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold">Approve</button>
+          <button class="px-4 py-2 rounded-lg border text-sm font-semibold">Edit</button>
+          <button class="px-4 py-2 rounded-lg border text-sm font-semibold">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="p-3 border-t">
+      <div class="flex items-center gap-2">
+        <input class="flex-1 border rounded-lg px-3 py-2 text-sm" placeholder="Ask me anything..." />
+        <button class="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold">➤</button>
+      </div>
+      <div class="text-[11px] text-slate-500 mt-2">All AI actions are logged and require your approval</div>
+    </div>
+  </section>
+</div>

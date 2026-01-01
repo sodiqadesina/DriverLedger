@@ -1,4 +1,4 @@
-﻿using DriverLedger.Api.Common.Auth;
+using DriverLedger.Api.Common.Auth;
 using DriverLedger.Domain.Identity;
 using System.IdentityModel.Tokens.Jwt;
 
@@ -22,21 +22,21 @@ namespace DriverLedger.Api.Modules.Auth
                 var hash = BCrypt.Net.BCrypt.HashPassword(req.Password);
                 var user = new User(email, hash);
 
-                // Ensure role exists
-                var driverRole = await db.Roles.FirstOrDefaultAsync(r => r.Name == "Driver", ct);
+                // Ensure roles exist + assign Driver
+                var driverRole = await db.Roles.SingleOrDefaultAsync(r => r.Name == "Driver", ct);
                 if (driverRole is null)
                 {
                     driverRole = new Role("Driver");
                     db.Roles.Add(driverRole);
-                    await db.SaveChangesAsync(ct); // ensure role has Id
                 }
 
+                // Add user + save once so both User + Role exist
                 db.Users.Add(user);
-                await db.SaveChangesAsync(ct); // ensure user has Id
-
-                db.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = driverRole.Id });
                 await db.SaveChangesAsync(ct);
 
+                // Link user to role
+                db.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = driverRole.Id });
+                await db.SaveChangesAsync(ct);
 
                 var jwt = tokens.CreateToken(user, new[] { "Driver" });
                 return Results.Ok(new { token = jwt });

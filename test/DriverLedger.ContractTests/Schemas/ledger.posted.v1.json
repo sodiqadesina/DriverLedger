@@ -1,0 +1,14 @@
+{
+    "type": "object",
+    "required": [ "ledgerEntryId", "sourceType", "sourceId", "entryDate" ],
+    "properties": {
+        "ledgerEntryId": {
+            "type": "string",
+            "format": "uuid"
+        },
+        "sourceType": { "type": "string" },
+        "sourceId": { "type": "string" },
+        "entryDate": { "type": "string" }
+    },
+    "additionalProperties": true
+}

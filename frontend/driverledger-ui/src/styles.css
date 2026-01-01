@@ -1,0 +1,13 @@
+/* You can add global styles to this file, and also import other style files */
+@import "tailwindcss";
+
+html, body { height: 100%; }
+body { margin: 0; }
+
+:root{
+  --dl-bg: #f7f8fb;
+  --dl-card: #ffffff;
+  --dl-border: rgba(15,23,42,.08);
+}
+
+body { background: var(--dl-bg); }

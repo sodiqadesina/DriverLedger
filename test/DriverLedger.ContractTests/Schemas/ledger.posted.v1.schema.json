@@ -1,0 +1,15 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "ledger.posted.v1",
+    "type": "object",
+    "required": [ "ledgerEntryId", "sourceType", "sourceId", "entryDate" ],
+    "properties": {
+        "ledgerEntryId": {
+            "type": "string",
+            "format": "uuid"
+        },
+        "sourceType": { "type": "string" },
+        "sourceId": { "type": "string" },
+        "entryDate": { "type": "string" }
+    }
+}

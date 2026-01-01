@@ -1,0 +1,18 @@
+{
+    "type": "object",
+    "required": [ "receiptId", "fileObjectId", "confidence", "isHold" ],
+    "properties": {
+        "receiptId": {
+            "type": "string",
+            "format": "uuid"
+        },
+        "fileObjectId": {
+            "type": "string",
+            "format": "uuid"
+        },
+        "confidence": { "type": "number" },
+        "isHold": { "type": "boolean" },
+        "holdReason": { "type": "string" }
+    },
+    "additionalProperties": true
+}

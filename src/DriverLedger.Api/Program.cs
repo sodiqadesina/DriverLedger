@@ -21,6 +21,7 @@ using DriverLedger.Infrastructure.Options;
 using DriverLedger.Infrastructure.Persistence.Interceptors;
 using DriverLedger.Infrastructure.Receipts;
 using DriverLedger.Infrastructure.Receipts.Extraction;
+using DriverLedger.Infrastructure.Statements.Extraction;
 using DriverLedger.Infrastructure.Statements.Snapshots;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics;
@@ -106,6 +107,10 @@ builder.Services.Configure<DocumentIntelligenceOptions>(
     builder.Configuration.GetSection("Azure:DocumentIntelligence"));
 
 builder.Services.AddScoped<IReceiptExtractor, AzureDocumentIntelligenceReceiptExtractor>();
+builder.Services.AddScoped<IStatementExtractor, AzureDocumentIntelligenceStatementExtractor>();
+builder.Services.AddScoped<IStatementExtractor, CsvStatementExtractor>();
+builder.Services.AddScoped<StatementExtractionHandler>();
+builder.Services.AddScoped<StatementToLedgerPostingHandler>();
 
 // -----------------------------
 // Azure clients

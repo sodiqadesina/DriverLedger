@@ -11,6 +11,7 @@ using DriverLedger.Infrastructure.Options;
 using DriverLedger.Infrastructure.Persistence;
 using DriverLedger.Infrastructure.Receipts;
 using DriverLedger.Infrastructure.Receipts.Extraction;
+using DriverLedger.Infrastructure.Statements.Extraction;
 using DriverLedger.Infrastructure.Statements.Snapshots;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -60,11 +61,15 @@ var host = new HostBuilder()
             ctx.Configuration.GetSection("Azure:DocumentIntelligence"));
 
         services.AddScoped<IReceiptExtractor, AzureDocumentIntelligenceReceiptExtractor>();
+        services.AddScoped<IStatementExtractor, AzureDocumentIntelligenceStatementExtractor>();
+        services.AddScoped<IStatementExtractor, CsvStatementExtractor>();
 
         // Handlers
         services.AddScoped<IReceiptReceivedHandler, ReceiptReceivedHandler>();
         services.AddScoped<ReceiptExtractionHandler>();
+        services.AddScoped<StatementExtractionHandler>();
         services.AddScoped<ReceiptToLedgerPostingHandler>();
+        services.AddScoped<StatementToLedgerPostingHandler>();
 
     })
     .Build();

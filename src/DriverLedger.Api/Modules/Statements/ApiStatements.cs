@@ -1,5 +1,8 @@
 using DriverLedger.Application.Common;
+using DriverLedger.Application.Messaging;
+using DriverLedger.Application.Statements.Messages;
 using DriverLedger.Domain.Statements;
+using DriverLedger.Infrastructure.Messaging;
 using Microsoft.AspNetCore.Mvc;
 
 namespace DriverLedger.Api.Modules.Statements
@@ -51,6 +54,7 @@ namespace DriverLedger.Api.Modules.Statements
                 Guid statementId,
                 ITenantProvider tenantProvider,
                 DriverLedgerDbContext db,
+                IMessagePublisher publisher,
                 CancellationToken ct) =>
             {
                 var tenantId = tenantProvider.TenantId ?? Guid.Empty;
@@ -66,9 +70,31 @@ namespace DriverLedger.Api.Modules.Statements
                 statement.Status = "Submitted";
                 await db.SaveChangesAsync(ct);
 
-                // TODO: publish statement.received.v1 message
+                var payload = new StatementReceived(
+                    StatementId: statement.Id,
+                    TenantId: statement.TenantId,
+                    Provider: statement.Provider,
+                    PeriodType: statement.PeriodType,
+                    PeriodKey: statement.PeriodKey,
+                    FileObjectId: statement.FileObjectId,
+                    PeriodStart: statement.PeriodStart,
+                    PeriodEnd: statement.PeriodEnd
+                );
+
+                var envelope = new MessageEnvelope<StatementReceived>(
+                    MessageId: Guid.NewGuid().ToString("N"),
+                    Type: "statement.received.v1",
+                    OccurredAt: DateTimeOffset.UtcNow,
+                    TenantId: tenantId,
+                    CorrelationId: Guid.NewGuid().ToString("N"),
+                    Data: payload
+                );
+
+                await publisher.PublishAsync("q.statement.received", envelope, ct);
+
                 return Results.Accepted($"/api/statements/{statement.Id}");
             });
+
 
             // List statements
             group.MapGet("/", async (

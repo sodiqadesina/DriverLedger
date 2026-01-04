@@ -1,7 +1,4 @@
-
-
 namespace DriverLedger.Domain.Statements
-
 {
     public sealed class Statement : Entity, ITenantScoped
     {
@@ -15,11 +12,21 @@ namespace DriverLedger.Domain.Statements
         public DateOnly PeriodStart { get; set; }
         public DateOnly PeriodEnd { get; set; }
 
-        public string Status { get; set; } = "Draft";
+        public string? VendorName { get; set; }
 
+        // ===== Statement-level currency normalization =====
+        public string? CurrencyCode { get; set; } // ISO: CAD, USD
+        public string CurrencyEvidence { get; set; } = "Inferred"; // Extracted | Inferred
+
+        public decimal? StatementTotalAmount { get; set; }
+        public decimal? TaxAmount { get; set; }
+
+        public string Status { get; set; } = "Draft";
         public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 
         public List<StatementLine> Lines { get; set; } = new();
-        public decimal TotalAmount => Lines.Sum(line => line.Amount);
+
+        // Monetary total only (metrics excluded)
+        public decimal TotalAmount => Lines.Sum(l => l.MoneyAmount ?? 0m);
     }
 }

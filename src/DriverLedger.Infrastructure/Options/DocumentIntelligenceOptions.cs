@@ -7,8 +7,9 @@ namespace DriverLedger.Infrastructure.Options
         public string Endpoint { get; init; } = "";
         public string ApiKey { get; init; } = "";
 
-        // Optional (defaults used if empty)
-        public string ModelId { get; init; } = "prebuilt-receipt";
+        public string ReceiptsModelId { get; init; } = "prebuilt-receipt";
+        public string StatementsModelId { get; init; } = "prebuilt-invoice";
+        public string StatementsMetadataModelId { get; init; } = "prebuilt-layout";
     }
 }
 

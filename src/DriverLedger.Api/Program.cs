@@ -8,6 +8,7 @@ using DriverLedger.Api.Modules.Files;
 using DriverLedger.Api.Modules.Ledger;
 using DriverLedger.Api.Modules.LiveStatement;
 using DriverLedger.Api.Modules.Receipts;
+using DriverLedger.Api.Modules.Statements;
 using DriverLedger.Application.Auditing;
 using DriverLedger.Application.Common;
 using DriverLedger.Application.Receipts;
@@ -85,6 +86,8 @@ opt.AddInterceptors(new LedgerImmutabilityInterceptor());
 builder.Services.AddScoped<ITenantProvider, TenantProvider>();
 builder.Services.AddSingleton<IClock, SystemClock>();
 
+builder.Services.AddAntiforgery();
+
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IRequestContext, RequestContext>();
 builder.Services.AddScoped<IAuditWriter, AuditWriter>();
@@ -109,6 +112,7 @@ builder.Services.Configure<DocumentIntelligenceOptions>(
 builder.Services.AddScoped<IReceiptExtractor, AzureDocumentIntelligenceReceiptExtractor>();
 builder.Services.AddScoped<IStatementExtractor, AzureDocumentIntelligenceStatementExtractor>();
 builder.Services.AddScoped<IStatementExtractor, CsvStatementExtractor>();
+builder.Services.AddScoped<IStatementMetadataExtractor, AzureDocumentIntelligenceStatementMetadataExtractor>();
 builder.Services.AddScoped<StatementExtractionHandler>();
 builder.Services.AddScoped<StatementToLedgerPostingHandler>();
 
@@ -241,7 +245,7 @@ app.UseMiddleware<CorrelationMiddleware>();
 app.UseAuthentication();
 app.UseMiddleware<TenantScopeMiddleware>();
 app.UseAuthorization();
-
+app.UseAntiforgery();
 app.MapHealthChecks("/health");
 
 // -----------------------------
@@ -252,6 +256,7 @@ ApiFiles.MapFileEndpoints(app);
 ApiReceipts.MapReceiptEndpoints(app);
 ApiLiveStatement.MapLiveStatement(app);
 ApiLedger.MapLedger(app);
+ApiStatements.MapStatementEndpoints(app);
 
 app.Run();
 

@@ -1,6 +1,5 @@
 using DriverLedger.Application.Common;
 using DriverLedger.Application.Messaging;
-using DriverLedger.Application.Receipts.Messages;
 using DriverLedger.Application.Statements.Messages;
 using DriverLedger.Domain.Auditing;
 using DriverLedger.Domain.Ledger;
@@ -20,7 +19,6 @@ namespace DriverLedger.Infrastructure.Ledger
     {
         private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
-        // Temporary “Uncategorized” category id for M1.
         private static readonly Guid UncategorizedCategoryId =
             Guid.Parse("00000000-0000-0000-0000-000000000001");
 
@@ -40,7 +38,6 @@ namespace DriverLedger.Infrastructure.Ledger
                 ["statementId"] = payload.StatementId
             });
 
-            // Idempotency guard #1: ProcessingJobs
             var dedupeKey = $"ledger.post:statement:{payload.StatementId:D}";
             var existingJob = await db.ProcessingJobs
                 .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.JobType == "ledger.post.statement" && x.DedupeKey == dedupeKey, ct);
@@ -51,7 +48,6 @@ namespace DriverLedger.Infrastructure.Ledger
                 return;
             }
 
-            // Idempotency guard #2: Unique LedgerEntry (TenantId, SourceType, SourceId)
             var sourceType = "Statement";
             var sourceId = payload.StatementId.ToString("D");
 
@@ -87,7 +83,6 @@ namespace DriverLedger.Infrastructure.Ledger
                 return;
             }
 
-            // Create or update job attempt
             var job = existingJob;
             if (job is null)
             {
@@ -120,7 +115,6 @@ namespace DriverLedger.Infrastructure.Ledger
                     .Where(x => x.TenantId == tenantId && x.StatementId == statement.Id)
                     .ToListAsync(ct);
 
-                // One LedgerEntry per statement (unique guard)
                 var entryDate = statement.PeriodEnd;
 
                 var entry = new LedgerEntry
@@ -136,14 +130,31 @@ namespace DriverLedger.Infrastructure.Ledger
                     Lines = new List<LedgerLine>()
                 };
 
+                var postedCount = 0;
+                var metricSkippedCount = 0;
+
                 foreach (var line in lines)
                 {
+                    // ===== IMPORTANT RULE =====
+                    // Do NOT post Metric lines into ledger money accounts.
+                    // Metrics should remain non-posting informational (or later go into a metrics store).
+                    if (line.IsMetric || string.Equals(line.LineType, "Metric", StringComparison.OrdinalIgnoreCase))
+                    {
+                        metricSkippedCount++;
+                        continue;
+                    }
+
+                    // Monetary amount: prefer MoneyAmount; fall back to legacy Amount.
+                    // If both are missing, treat as 0 (should be rare; better than throwing).
+                    var money = line.MoneyAmount ?? 0m;
+
                     var ledgerLine = new LedgerLine
                     {
                         TenantId = tenantId,
                         LedgerEntryId = entry.Id,
                         CategoryId = UncategorizedCategoryId,
-                        Amount = line.Amount,
+                        LineType = string.IsNullOrWhiteSpace(line.LineType) ? "Fee" : line.LineType,
+                        Amount = money,
                         GstHst = line.TaxAmount ?? 0m,
                         DeductiblePct = 1.0m,
                         Memo = line.Description,
@@ -161,6 +172,7 @@ namespace DriverLedger.Infrastructure.Ledger
                     });
 
                     entry.Lines.Add(ledgerLine);
+                    postedCount++;
                 }
 
                 db.LedgerEntries.Add(entry);
@@ -181,8 +193,10 @@ namespace DriverLedger.Infrastructure.Ledger
                         sourceType,
                         sourceId,
                         statementId = statement.Id,
-                        lineCount = lines.Count,
-                        entryDate = entryDate.ToString("yyyy-MM-dd")
+                        entryDate = entryDate.ToString("yyyy-MM-dd"),
+                        totalLines = lines.Count,
+                        postedMonetaryLines = postedCount,
+                        skippedMetricLines = metricSkippedCount
                     }, JsonOpts)
                 });
 
@@ -192,7 +206,7 @@ namespace DriverLedger.Infrastructure.Ledger
                     Type = "StatementPosted",
                     Severity = "Info",
                     Title = "Statement posted to ledger",
-                    Body = $"Posted {lines.Count} statement lines.",
+                    Body = $"Posted {postedCount} monetary lines. Skipped {metricSkippedCount} metric lines.",
                     DataJson = JsonSerializer.Serialize(new { statementId = statement.Id, entry.Id }, JsonOpts),
                     Status = "New",
                     CreatedAt = DateTimeOffset.UtcNow
@@ -203,15 +217,14 @@ namespace DriverLedger.Infrastructure.Ledger
 
                 await db.SaveChangesAsync(ct);
 
-                // Emit ledger.posted.v1 -> q.ledger.posted
-                var postedPayload = new LedgerPosted(
+                var postedPayload = new Application.Receipts.Messages.LedgerPosted(
                     LedgerEntryId: entry.Id,
                     SourceType: sourceType,
                     SourceId: sourceId,
                     EntryDate: entryDate.ToString("yyyy-MM-dd")
                 );
 
-                var outEnvelope = new MessageEnvelope<LedgerPosted>(
+                var outEnvelope = new MessageEnvelope<Application.Receipts.Messages.LedgerPosted>(
                     MessageId: Guid.NewGuid().ToString("N"),
                     Type: "ledger.posted.v1",
                     OccurredAt: DateTimeOffset.UtcNow,

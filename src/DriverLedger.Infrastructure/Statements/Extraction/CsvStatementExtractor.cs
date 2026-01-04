@@ -1,9 +1,6 @@
-
-
 using System.Text;
 
 namespace DriverLedger.Infrastructure.Statements.Extraction
-
 {
     public sealed class CsvStatementExtractor : IStatementExtractor
     {
@@ -25,9 +22,7 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
             {
                 var line = await reader.ReadLineAsync(ct);
                 if (line is not null)
-                {
                     lines.Add(line);
-                }
             }
 
             if (lines.Count == 0)
@@ -73,21 +68,46 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
                 if (!amount.HasValue && !taxAmount.HasValue) continue;
 
                 var lineDate = StatementExtractionParsing.ParseDate(dateText) ?? DateOnly.MinValue;
-                var currency = StatementExtractionParsing.FirstNonEmpty(
-                    StatementExtractionParsing.ExtractCurrency(currencyText),
-                    StatementExtractionParsing.ExtractCurrency(amountText),
-                    StatementExtractionParsing.ExtractCurrency(taxText));
 
-                var lineType = StatementExtractionParsing.ResolveLineType(typeText, amount, taxAmount);
+                // Currency resolution: try explicit currency column first, then the amount cells
+                var currencyFromCurrencyCol = StatementExtractionParsing.ExtractCurrency(currencyText);
+                var currencyFromAmount = StatementExtractionParsing.ExtractCurrency(amountText);
+                var currencyFromTax = StatementExtractionParsing.ExtractCurrency(taxText);
+
+                var currencyCode = StatementExtractionParsing.FirstNonEmpty(
+                    currencyFromCurrencyCol,
+                    currencyFromAmount,
+                    currencyFromTax);
+
+                // Evidence: if we extracted any explicit currency token/symbol from row data, treat it as extracted.
+                // Otherwise inferred (statement-level inheritance can fill it later during persistence).
+                var currencyEvidence =
+                    !string.IsNullOrWhiteSpace(currencyFromCurrencyCol) ||
+                    !string.IsNullOrWhiteSpace(currencyFromAmount) ||
+                    !string.IsNullOrWhiteSpace(currencyFromTax)
+                        ? "Extracted"
+                        : "Inferred";
+
+                var lineType = StatementExtractionParsing.ResolveLineType(typeText, amount, taxAmount, descText);
                 var description = StatementExtractionParsing.FirstNonEmpty(descText, typeText);
 
                 output.Add(new StatementLineNormalized(
-                    lineDate,
-                    lineType,
-                    description,
-                    currency,
-                    amount ?? 0m,
-                    taxAmount));
+                    LineDate: lineDate,
+                    LineType: lineType,
+                    Description: description,
+
+                    CurrencyCode: currencyCode,
+                    CurrencyEvidence: currencyEvidence,
+                    ClassificationEvidence: "Extracted", // CSV is structured (not OCR inference)
+
+                    IsMetric: false,
+                    MetricKey: null,
+                    MetricValue: null,
+                    Unit: null,
+
+                    MoneyAmount: amount,      // keep as nullable
+                    TaxAmount: taxAmount
+                ));
             }
 
             return output;

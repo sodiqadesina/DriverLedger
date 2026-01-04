@@ -15,6 +15,16 @@ namespace DriverLedger.Domain.Ledger
         public string? Memo { get; set; }
         public string? AccountCode { get; set; }
 
+        /// <summary>
+        /// Ledger meaning:
+        /// - "Income" => revenue
+        /// - "Fee" => expense
+        /// - "TaxCollected" => output tax line (Amount should be 0; GstHst holds tax)
+        /// - "Itc" => input tax line (Amount should be 0; GstHst holds tax)
+        /// - "Other" => ignored or treated as expense depending on snapshot rules
+        /// </summary>
+        public string LineType { get; init; } = "Fee";
+
         public List<LedgerSourceLink> SourceLinks { get; set; } = new();
     }
 }

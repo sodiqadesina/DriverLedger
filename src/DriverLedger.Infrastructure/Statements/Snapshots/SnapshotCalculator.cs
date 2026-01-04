@@ -1,5 +1,3 @@
-
-
 using DriverLedger.Application.Common;
 using DriverLedger.Application.Messaging;
 using DriverLedger.Application.Receipts.Messages;
@@ -25,7 +23,6 @@ namespace DriverLedger.Infrastructure.Statements.Snapshots
             var correlationId = envelope.CorrelationId;
             var payload = envelope.Data;
 
-            // Ensures EF global tenant filters see this tenant
             tenantProvider.SetTenant(tenantId);
 
             using var scope = logger.BeginScope(new Dictionary<string, object?>
@@ -36,18 +33,22 @@ namespace DriverLedger.Infrastructure.Statements.Snapshots
                 ["ledgerEntryId"] = payload.LedgerEntryId
             });
 
-            // EntryDate in payload is "yyyy-MM-dd"
             if (!DateOnly.TryParse(payload.EntryDate, out var entryDate))
             {
                 logger.LogWarning("Invalid EntryDate format in ledger.posted.v1: {EntryDate}", payload.EntryDate);
                 return;
             }
 
-            // monthly key: YYYY-MM
+            // Monthly (Uber statements + general reporting)
             var monthlyKey = $"{entryDate.Year:D4}-{entryDate.Month:D2}";
             await ComputeAndUpsertAsync(tenantId, correlationId, periodType: "Monthly", periodKey: monthlyKey, ct);
 
-            // ytd key: YYYY
+            // Quarterly (Lyft statements + CRA GST/HST filing cadence for many drivers)
+            var quarter = ((entryDate.Month - 1) / 3) + 1; // 1..4
+            var quarterlyKey = $"{entryDate.Year:D4}-Q{quarter}";
+            await ComputeAndUpsertAsync(tenantId, correlationId, periodType: "Quarterly", periodKey: quarterlyKey, ct);
+
+            // Year-to-date
             var ytdKey = $"{entryDate.Year:D4}";
             await ComputeAndUpsertAsync(tenantId, correlationId, periodType: "YTD", periodKey: ytdKey, ct);
         }
@@ -56,7 +57,6 @@ namespace DriverLedger.Infrastructure.Statements.Snapshots
         {
             var dedupeKey = $"snapshot.compute:{periodType}:{periodKey}";
 
-            // Track attempts/status, but do NOT use this to prevent recomputation (totals change).
             ProcessingJob job;
 
             var existingJob = await db.ProcessingJobs
@@ -92,7 +92,7 @@ namespace DriverLedger.Infrastructure.Statements.Snapshots
             {
                 var (start, endExclusive) = GetRange(periodType, periodKey);
 
-                // Totals for the period
+                // ===== 1) Pull ledger lines in the period (metrics never get posted, good) =====
                 var linesQuery =
                     from e in db.LedgerEntries
                     join l in db.LedgerLines on e.Id equals l.LedgerEntryId
@@ -100,60 +100,80 @@ namespace DriverLedger.Infrastructure.Statements.Snapshots
                     where e.EntryDate >= start && e.EntryDate < endExclusive
                     select new
                     {
-                        e.Id,
+                        LedgerEntryId = e.Id,
                         e.SourceType,
                         e.SourceId,
+                        LedgerLineId = l.Id,
                         l.Amount,
-                        l.GstHst
+                        l.GstHst,
+                        l.LineType
                     };
 
                 var lines = await linesQuery.ToListAsync(ct);
 
-                var expensesTotal = lines.Sum(x => x.Amount);
-                var itcTotal = lines.Sum(x => x.GstHst);
+                var revenueTotal = lines
+                    .Where(x => x.LineType == "Income")
+                    .Sum(x => x.Amount);
 
-                var totalLines = lines.Count;
+                var expensesTotal = lines
+                    .Where(x => x.LineType == "Fee")
+                    .Sum(x => x.Amount);
 
-                // EvidencePct: lines from Receipt sources that have extraction and receipt not HOLD
-                var receiptSourceIds = lines
-                    .Where(x => x.SourceType == "Receipt")
-                    .Select(x => x.SourceId)
-                    .Distinct()
-                    .ToList();
+                // You currently post ITC/TaxCollected as tax-only lines with GstHst.
+                var itcTotal = lines
+                    .Where(x => x.LineType == "Itc")
+                    .Sum(x => x.GstHst);
 
-                var receiptIds = receiptSourceIds
-                    .Select(s => Guid.TryParse(s, out var g) ? g : Guid.Empty)
-                    .Where(g => g != Guid.Empty)
-                    .ToList();
+                var taxCollectedTotal = lines
+                    .Where(x => x.LineType == "TaxCollected")
+                    .Sum(x => x.GstHst);
 
-                var evidencedReceiptIds = await (
-                    from r in db.Receipts
-                    where r.TenantId == tenantId
-                    where receiptIds.Contains(r.Id)
-                    where r.Status != "HOLD"
-                    join ex in db.ReceiptExtractions on r.Id equals ex.ReceiptId
-                    select r.Id
-                ).Distinct().ToListAsync(ct);
+                var netTax = taxCollectedTotal - itcTotal;
 
-                var evidencedLines = lines.Count(x =>
-                    x.SourceType == "Receipt" &&
-                    Guid.TryParse(x.SourceId, out var rid) &&
-                    evidencedReceiptIds.Contains(rid));
+                // ===== 2) EvidencePct/EstimatedPct from STATEMENT evidence, not receipts =====
+                // Only monetary statement lines (Income/Fee/Expense), ignore metric lines.
+                //
+                // Join LedgerLine -> LedgerSourceLink -> StatementLine
+                // so the evidence computation reflects extracted vs inferred currency/classification.
+                var statementEvidence = await (
+                    from e in db.LedgerEntries
+                    join l in db.LedgerLines on e.Id equals l.LedgerEntryId
+                    join link in db.Set<DriverLedger.Domain.Ledger.LedgerSourceLink>() on l.Id equals link.LedgerLineId
+                    join sl in db.StatementLines on link.StatementLineId equals sl.Id
+                    where e.TenantId == tenantId
+                    where e.EntryDate >= start && e.EntryDate < endExclusive
+                    where link.StatementLineId != null
+                    where sl.IsMetric == false
+                    where sl.LineType == "Income" || sl.LineType == "Fee" || sl.LineType == "Expense"
+                    select new
+                    {
+                        sl.CurrencyEvidence,
+                        sl.ClassificationEvidence
+                    }
+                ).ToListAsync(ct);
 
-                var authority = AuthorityScoreCalculator.Compute(totalLines, evidencedLines);
+                var totalMonetaryStatementLines = statementEvidence.Count;
+
+                var evidencedMonetaryStatementLines = statementEvidence.Count(x =>
+                    string.Equals(x.CurrencyEvidence, "Extracted", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(x.ClassificationEvidence, "Extracted", StringComparison.OrdinalIgnoreCase));
+
+                // AuthorityScoreCalculator expects total lines + evidenced lines.
+                // Here total = monetary statement lines only (correct per requirement).
+                var authority = AuthorityScoreCalculator.Compute(totalMonetaryStatementLines, evidencedMonetaryStatementLines);
                 var evidencePct = authority.EvidencePct;
                 var estimatedPct = authority.EstimatedPct;
                 var authorityScore = authority.AuthorityScore;
 
                 var totalsJson = JsonSerializer.Serialize(new
                 {
-                    revenue = 0m,
+                    revenue = revenueTotal,
                     expenses = expensesTotal,
                     itc = itcTotal,
-                    netTax = -itcTotal
+                    taxCollected = taxCollectedTotal,
+                    netTax
                 }, JsonOpts);
 
-                // Upsert snapshot
                 var snapshot = await db.LedgerSnapshots
                     .Include(s => s.Details)
                     .SingleOrDefaultAsync(s =>
@@ -176,35 +196,11 @@ namespace DriverLedger.Infrastructure.Statements.Snapshots
                         Details = new List<SnapshotDetail>()
                     };
 
-                    snapshot.Details.Add(new SnapshotDetail
-                    {
-                        TenantId = tenantId,
-                        SnapshotId = snapshot.Id,
-                        MetricKey = "ExpensesTotal",
-                        Value = expensesTotal,
-                        EvidencePct = evidencePct,
-                        EstimatedPct = estimatedPct
-                    });
-
-                    snapshot.Details.Add(new SnapshotDetail
-                    {
-                        TenantId = tenantId,
-                        SnapshotId = snapshot.Id,
-                        MetricKey = "ItcTotal",
-                        Value = itcTotal,
-                        EvidencePct = evidencePct,
-                        EstimatedPct = estimatedPct
-                    });
-
-                    snapshot.Details.Add(new SnapshotDetail
-                    {
-                        TenantId = tenantId,
-                        SnapshotId = snapshot.Id,
-                        MetricKey = "NetTax",
-                        Value = -itcTotal,
-                        EvidencePct = evidencePct,
-                        EstimatedPct = estimatedPct
-                    });
+                    snapshot.Details.Add(new SnapshotDetail { TenantId = tenantId, SnapshotId = snapshot.Id, MetricKey = "RevenueTotal", Value = revenueTotal, EvidencePct = evidencePct, EstimatedPct = estimatedPct });
+                    snapshot.Details.Add(new SnapshotDetail { TenantId = tenantId, SnapshotId = snapshot.Id, MetricKey = "ExpensesTotal", Value = expensesTotal, EvidencePct = evidencePct, EstimatedPct = estimatedPct });
+                    snapshot.Details.Add(new SnapshotDetail { TenantId = tenantId, SnapshotId = snapshot.Id, MetricKey = "TaxCollectedTotal", Value = taxCollectedTotal, EvidencePct = evidencePct, EstimatedPct = estimatedPct });
+                    snapshot.Details.Add(new SnapshotDetail { TenantId = tenantId, SnapshotId = snapshot.Id, MetricKey = "ItcTotal", Value = itcTotal, EvidencePct = evidencePct, EstimatedPct = estimatedPct });
+                    snapshot.Details.Add(new SnapshotDetail { TenantId = tenantId, SnapshotId = snapshot.Id, MetricKey = "NetTax", Value = netTax, EvidencePct = evidencePct, EstimatedPct = estimatedPct });
 
                     db.LedgerSnapshots.Add(snapshot);
                 }
@@ -216,9 +212,11 @@ namespace DriverLedger.Infrastructure.Statements.Snapshots
                     snapshot.EstimatedPct = estimatedPct;
                     snapshot.TotalsJson = totalsJson;
 
+                    UpsertDetail(snapshot, "RevenueTotal", revenueTotal, evidencePct, estimatedPct);
                     UpsertDetail(snapshot, "ExpensesTotal", expensesTotal, evidencePct, estimatedPct);
+                    UpsertDetail(snapshot, "TaxCollectedTotal", taxCollectedTotal, evidencePct, estimatedPct);
                     UpsertDetail(snapshot, "ItcTotal", itcTotal, evidencePct, estimatedPct);
-                    UpsertDetail(snapshot, "NetTax", -itcTotal, evidencePct, estimatedPct);
+                    UpsertDetail(snapshot, "NetTax", netTax, evidencePct, estimatedPct);
                 }
 
                 db.AuditEvents.Add(new AuditEvent
@@ -236,8 +234,13 @@ namespace DriverLedger.Infrastructure.Statements.Snapshots
                         periodKey,
                         authorityScore,
                         evidencePct,
+                        revenueTotal,
                         expensesTotal,
-                        itcTotal
+                        taxCollectedTotal,
+                        itcTotal,
+                        netTax,
+                        totalMonetaryStatementLines,
+                        evidencedMonetaryStatementLines
                     }, JsonOpts)
                 });
 
@@ -300,6 +303,17 @@ namespace DriverLedger.Infrastructure.Statements.Snapshots
                 var month = int.Parse(periodKey[5..7]);
                 var start = new DateOnly(year, month, 1);
                 var end = start.AddMonths(1);
+                return (start, end);
+            }
+
+            if (periodType == "Quarterly")
+            {
+                // periodKey: YYYY-Qn (e.g., 2024-Q4)
+                var year = int.Parse(periodKey[..4]);
+                var q = int.Parse(periodKey[^1..]); // last char 1..4
+                var startMonth = (q - 1) * 3 + 1; // 1,4,7,10
+                var start = new DateOnly(year, startMonth, 1);
+                var end = start.AddMonths(3);
                 return (start, end);
             }
 

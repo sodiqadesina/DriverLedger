@@ -1,38 +1,33 @@
-
-
 using DriverLedger.Application.Common;
 using DriverLedger.Application.Messaging;
 using DriverLedger.Application.Statements.Messages;
-using DriverLedger.Domain.Ops;
+using DriverLedger.Domain.Auditing;
+using DriverLedger.Domain.Files;
+using DriverLedger.Domain.Notifications;
 using DriverLedger.Domain.Statements;
 using DriverLedger.Infrastructure.Files;
 using DriverLedger.Infrastructure.Messaging;
 using DriverLedger.Infrastructure.Persistence;
 using Microsoft.Extensions.Logging;
-using System.Diagnostics;
+using System.Text.Json;
 
 namespace DriverLedger.Infrastructure.Statements.Extraction
 {
-
     public sealed class StatementExtractionHandler(
-    DriverLedgerDbContext db,
-    ITenantProvider tenantProvider,
-    IEnumerable<IStatementExtractor> extractors,
-    IBlobStorage blobStorage,
-    IMessagePublisher publisher,
-    ILogger<StatementExtractionHandler> logger)
+        DriverLedgerDbContext db,
+        ITenantProvider tenantProvider,
+        IBlobStorage blobStorage,
+        IEnumerable<IStatementExtractor> extractors,
+        IMessagePublisher publisher,
+        ILogger<StatementExtractionHandler> logger)
     {
-        private static bool IsUniqueViolation(DbUpdateException ex)
-        {
-            if (ex.InnerException is not Microsoft.Data.SqlClient.SqlException sql) return false;
-            return sql.Number is 2601 or 2627;
-        }
+        private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
         public async Task HandleAsync(MessageEnvelope<StatementReceived> envelope, CancellationToken ct)
         {
             var tenantId = envelope.TenantId;
             var correlationId = envelope.CorrelationId;
-            var payload = envelope.Data;
+            var msg = envelope.Data;
 
             tenantProvider.SetTenant(tenantId);
 
@@ -41,181 +36,205 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
                 ["tenantId"] = tenantId,
                 ["correlationId"] = correlationId,
                 ["messageId"] = envelope.MessageId,
-                ["statementId"] = payload.StatementId
+                ["fileObjectId"] = msg.FileObjectId,
+                ["provider"] = msg.Provider,
+                ["periodKey"] = msg.PeriodKey
             });
 
-            var dedupeKey = $"statement.extract:{payload.StatementId}";
+            // Load file metadata
+            var file = await db.FileObjects.SingleAsync(x => x.TenantId == tenantId && x.Id == msg.FileObjectId, ct);
 
-            var existingJob = await db.ProcessingJobs
-                .SingleOrDefaultAsync(x => x.TenantId == tenantId && x.JobType == "statement.extract" && x.DedupeKey == dedupeKey, ct);
+            // Choose extractor by content type
+            var extractor = extractors.FirstOrDefault(x => x.CanHandleContentType(file.ContentType));
+            if (extractor is null)
+                throw new InvalidOperationException($"No statement extractor found for content type: {file.ContentType}");
 
-            if (existingJob is not null && existingJob.Status == "Succeeded")
+            // Open blob stream
+            await using var content = await blobStorage.OpenReadAsync(file.BlobPath, ct);
+
+            // Extract normalized lines
+            var normalized = await extractor.ExtractAsync(content, ct);
+
+            // Determine statement-level currency (once)
+            var resolvedStatementCurrency = ResolveStatementCurrency(file, normalized, out var stmtCurrencyEvidence);
+
+            // Upsert statement (by Provider/PeriodType/PeriodKey unique index)
+            var statement = await db.Statements.SingleOrDefaultAsync(x =>
+                x.TenantId == tenantId &&
+                x.Provider == msg.Provider &&
+                x.PeriodType == msg.PeriodType &&
+                x.PeriodKey == msg.PeriodKey, ct);
+
+            if (statement is null)
             {
-                logger.LogInformation("Extraction already succeeded. DedupeKey={DedupeKey}", dedupeKey);
-                return;
-            }
-
-            ProcessingJob job;
-            if (existingJob is null)
-            {
-                job = new()
+                statement = new Statement
                 {
                     TenantId = tenantId,
-                    JobType = "statement.extract",
-                    DedupeKey = dedupeKey,
-                    Status = "Started",
-                    Attempts = 1,
-                    CreatedAt = DateTimeOffset.UtcNow,
-                    UpdatedAt = DateTimeOffset.UtcNow
+                    FileObjectId = msg.FileObjectId,
+                    Provider = msg.Provider,
+                    PeriodType = msg.PeriodType,
+                    PeriodKey = msg.PeriodKey,
+                    PeriodStart = msg.PeriodStart,
+                    PeriodEnd = msg.PeriodEnd,
+                    VendorName = msg.Provider,
+                    Status = "Draft",
+                    CreatedAt = DateTimeOffset.UtcNow
                 };
-                db.ProcessingJobs.Add(job);
+                db.Statements.Add(statement);
             }
             else
             {
-                job = existingJob;
-                job.Attempts += 1;
-                job.Status = "Started";
-                job.UpdatedAt = DateTimeOffset.UtcNow;
-                job.LastError = null;
+                // update file link + period boundaries if reprocessing
+                statement.FileObjectId = msg.FileObjectId;
+                statement.PeriodStart = msg.PeriodStart;
+                statement.PeriodEnd = msg.PeriodEnd;
+                statement.Status = "Draft";
             }
 
-            try
+            statement.CurrencyCode = resolvedStatementCurrency;
+            statement.CurrencyEvidence = stmtCurrencyEvidence;
+
+            // Replace existing lines for idempotency
+            var existingLines = await db.StatementLines
+                .Where(x => x.TenantId == tenantId && x.StatementId == statement.Id)
+                .ToListAsync(ct);
+
+            db.StatementLines.RemoveRange(existingLines);
+
+            // Persist normalized -> domain
+            foreach (var n in normalized)
             {
-                await db.SaveChangesAsync(ct);
-            }
-            catch (DbUpdateException ex) when (IsUniqueViolation(ex))
-            {
-                logger.LogWarning("ProcessingJob duplicate detected for dedupeKey={DedupeKey}. Reloading existing job.", dedupeKey);
+                // normalize per-line currency (inherit statement if missing)
+                var lineCurrency = n.CurrencyCode ?? statement.CurrencyCode;
+                var lineCurrencyEvidence = n.CurrencyCode is null ? "Inferred" : n.CurrencyEvidence;
 
-                job = await db.ProcessingJobs
-                    .SingleAsync(x => x.TenantId == tenantId && x.JobType == "statement.extract" && x.DedupeKey == dedupeKey, ct);
+                // enforce money only for Income/Fee/Expense
+                decimal? moneyAmount = null;
+                if (!n.IsMetric && StatementExtractionParsing.IsMonetaryType(n.LineType))
+                    moneyAmount = n.MoneyAmount;
 
-                job.Attempts += 1;
-                job.Status = "Started";
-                job.UpdatedAt = DateTimeOffset.UtcNow;
-                job.LastError = null;
+                // tax-only lines keep money null, tax populated
+                if (!n.IsMetric && StatementExtractionParsing.IsTaxOnlyType(n.LineType))
+                    moneyAmount = null;
 
-                await db.SaveChangesAsync(ct);
-            }
-
-            try
-            {
-                var statement = await db.Statements
-                    .SingleAsync(x => x.TenantId == tenantId && x.Id == payload.StatementId, ct);
-
-                var fileObj = await db.FileObjects
-                    .SingleAsync(x => x.TenantId == tenantId && x.Id == payload.FileObjectId, ct);
-
-                statement.Status = "Processing";
-                await db.SaveChangesAsync(ct);
-
-                var extractor = SelectExtractor(fileObj.ContentType);
-
-                await using var remote = await blobStorage.OpenReadAsync(fileObj.BlobPath, ct);
-                await using var ms = new MemoryStream();
-                await remote.CopyToAsync(ms, ct);
-                ms.Position = 0;
-
-                var sw = Stopwatch.StartNew();
-                var normalizedLines = await extractor.ExtractAsync(ms, ct);
-                sw.Stop();
-
-                var existingLines = await db.StatementLines
-                    .Where(x => x.TenantId == tenantId && x.StatementId == statement.Id)
-                    .ToListAsync(ct);
-
-                if (existingLines.Count > 0)
+                var line = new StatementLine
                 {
-                    db.StatementLines.RemoveRange(existingLines);
-                }
+                    TenantId = tenantId,
+                    StatementId = statement.Id,
+                    LineDate = n.LineDate,
 
-                var statementLines = normalizedLines
-                    .Select(line => new StatementLine
-                    {
-                        TenantId = tenantId,
-                        StatementId = statement.Id,
-                        LineDate = line.LineDate == DateOnly.MinValue ? statement.PeriodStart : line.LineDate,
-                        LineType = line.LineType,
-                        Description = line.Description,
-                        Currency = line.Currency,
-                        Amount = line.Amount,
-                        TaxAmount = line.TaxAmount
-                    })
-                    .ToList();
+                    LineType = n.IsMetric ? "Metric" : n.LineType,
+                    Description = n.Description,
 
-                if (statementLines.Count > 0)
-                {
-                    db.StatementLines.AddRange(statementLines);
-                }
+                    CurrencyCode = lineCurrency,
+                    CurrencyEvidence = lineCurrencyEvidence,
 
-                statement.Status = "Parsed";
+                    ClassificationEvidence = n.ClassificationEvidence,
 
-                job.Status = "Succeeded";
-                job.UpdatedAt = DateTimeOffset.UtcNow;
+                    IsMetric = n.IsMetric,
+                    MetricKey = n.MetricKey,
+                    MetricValue = n.MetricValue,
+                    Unit = n.Unit,
 
-                await db.SaveChangesAsync(ct);
+                    MoneyAmount = moneyAmount,
+                    TaxAmount = n.TaxAmount
+                };
 
-                var incomeTotal = statementLines
-                    .Where(x => x.LineType == "Income")
-                    .Sum(x => x.Amount);
-
-                var feeTotal = statementLines
-                    .Where(x => x.LineType == "Fee")
-                    .Sum(x => x.Amount);
-
-                var taxTotal = statementLines
-                    .Sum(x => x.TaxAmount ?? (x.LineType == "Tax" ? x.Amount : 0m));
-
-                logger.LogInformation(
-                    "Statement parsed in {ElapsedMs}ms. Lines={LineCount} IncomeTotal={IncomeTotal} FeeTotal={FeeTotal} TaxTotal={TaxTotal}",
-                    sw.ElapsedMilliseconds,
-                    statementLines.Count,
-                    incomeTotal,
-                    feeTotal,
-                    taxTotal);
-
-                var parsedPayload = new StatementParsed(
-                    StatementId: statement.Id,
-                    TenantId: tenantId,
-                    Provider: statement.Provider,
-                    PeriodType: statement.PeriodType,
-                    PeriodKey: statement.PeriodKey,
-                    LineCount: statementLines.Count,
-                    IncomeTotal: incomeTotal,
-                    FeeTotal: feeTotal,
-                    TaxTotal: taxTotal);
-
-                var parsedEnvelope = new MessageEnvelope<StatementParsed>(
-                    MessageId: Guid.NewGuid().ToString("N"),
-                    Type: "statement.parsed.v1",
-                    OccurredAt: DateTimeOffset.UtcNow,
-                    TenantId: tenantId,
-                    CorrelationId: correlationId,
-                    Data: parsedPayload);
-
-                await publisher.PublishAsync("q.statement.parsed", parsedEnvelope, ct);
+                db.StatementLines.Add(line);
             }
-            catch (Exception ex)
+
+            // compute rollups for event payload
+            var monetary = normalized.Where(x => !x.IsMetric && StatementExtractionParsing.IsMonetaryType(x.LineType)).ToList();
+            var incomeTotal = monetary.Where(x => x.LineType == "Income").Sum(x => x.MoneyAmount ?? 0m);
+            var feeTotal = monetary.Where(x => x.LineType == "Fee").Sum(x => x.MoneyAmount ?? 0m);
+            var taxTotal = normalized.Where(x => !x.IsMetric).Sum(x => x.TaxAmount ?? 0m);
+
+            statement.StatementTotalAmount = incomeTotal - feeTotal; // simple net; adjust later if you want
+            statement.TaxAmount = taxTotal;
+
+            db.AuditEvents.Add(new AuditEvent
             {
-                job.Status = "Failed";
-                job.LastError = ex.Message;
-                job.UpdatedAt = DateTimeOffset.UtcNow;
+                TenantId = tenantId,
+                ActorUserId = "system",
+                Action = "statement.parsed",
+                EntityType = "Statement",
+                EntityId = statement.Id.ToString("D"),
+                OccurredAt = DateTimeOffset.UtcNow,
+                CorrelationId = correlationId,
+                MetadataJson = JsonSerializer.Serialize(new
+                {
+                    provider = statement.Provider,
+                    periodType = statement.PeriodType,
+                    periodKey = statement.PeriodKey,
+                    lineCount = normalized.Count,
+                    statementCurrency = statement.CurrencyCode,
+                    currencyEvidence = statement.CurrencyEvidence,
+                    modelVersion = extractor.ModelVersion
+                }, JsonOpts)
+            });
 
-                await db.SaveChangesAsync(ct);
-                throw;
-            }
+            db.Notifications.Add(new Notification
+            {
+                TenantId = tenantId,
+                Type = "StatementParsed",
+                Severity = "Info",
+                Title = "Statement parsed",
+                Body = $"Parsed {normalized.Count} lines ({statement.Provider} {statement.PeriodKey}).",
+                DataJson = JsonSerializer.Serialize(new { statementId = statement.Id }, JsonOpts),
+                Status = "New",
+                CreatedAt = DateTimeOffset.UtcNow
+            });
+
+            await db.SaveChangesAsync(ct);
+
+            // Publish StatementParsed (constructor signature matters!)
+            var parsed = new StatementParsed(
+                StatementId: statement.Id,
+                TenantId: tenantId,
+                Provider: statement.Provider,
+                PeriodType: statement.PeriodType,
+                PeriodKey: statement.PeriodKey,
+                LineCount: normalized.Count,
+                IncomeTotal: incomeTotal,
+                FeeTotal: feeTotal,
+                TaxTotal: taxTotal
+            );
+
+            var outEnvelope = new MessageEnvelope<StatementParsed>(
+                MessageId: Guid.NewGuid().ToString("N"),
+                Type: "statement.parsed.v1",
+                OccurredAt: DateTimeOffset.UtcNow,
+                TenantId: tenantId,
+                CorrelationId: correlationId,
+                Data: parsed
+            );
+
+            await publisher.PublishAsync("q.statement.parsed", outEnvelope, ct);
         }
 
-        private IStatementExtractor SelectExtractor(string contentType)
+        private static string ResolveStatementCurrency(
+            FileObject file,
+            IReadOnlyList<StatementLineNormalized> lines,
+            out string evidence)
         {
-            var extractor = extractors.FirstOrDefault(x => x.CanHandleContentType(contentType));
-            if (extractor is null)
+            // 1) try from lines explicitly
+            var explicitCur = lines
+                .Select(x => x.CurrencyCode)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .GroupBy(x => x!)
+                .OrderByDescending(g => g.Count())
+                .Select(g => g.Key)
+                .FirstOrDefault();
+
+            if (!string.IsNullOrWhiteSpace(explicitCur))
             {
-                throw new InvalidOperationException($"No statement extractor registered for content type '{contentType}'.");
+                evidence = "Extracted";
+                return explicitCur!;
             }
 
-            return extractor;
+            // 2) Canada-first fallback
+            evidence = "Inferred";
+            return "CAD";
         }
     }
-
 }

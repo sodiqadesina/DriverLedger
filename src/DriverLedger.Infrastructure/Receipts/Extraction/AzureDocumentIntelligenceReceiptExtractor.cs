@@ -32,7 +32,7 @@ namespace DriverLedger.Infrastructure.Receipts.Extraction
             if (string.IsNullOrWhiteSpace(o.ApiKey))
                 throw new InvalidOperationException("Azure:DocumentIntelligence:ApiKey is missing.");
 
-            _modelId = string.IsNullOrWhiteSpace(o.ModelId) ? "prebuilt-receipt" : o.ModelId.Trim();
+            _modelId = string.IsNullOrWhiteSpace(o.ReceiptsModelId) ? "prebuilt-receipt" : o.ReceiptsModelId.Trim();
 
             _client = new DocumentAnalysisClient(new Uri(o.Endpoint), new AzureKeyCredential(o.ApiKey));
         }

@@ -1,5 +1,3 @@
-
-
 using DriverLedger.Application.Common;
 using DriverLedger.Application.Messaging;
 using DriverLedger.Application.Messaging.Events;
@@ -42,16 +40,15 @@ namespace DriverLedger.IntegrationTests.Ledger
                     ContentType = "application/pdf",
                     OriginalName = "test.pdf",
                     Size = 123,
-                    Sha256 = "0000000000000000000000000000000000000000000000000000000000000000" // 64 hex chars
+                    Sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
                 };
-
 
                 db.FileObjects.Add(file);
 
-                var receipt = new Domain.Receipts.Receipt 
+                var receipt = new Domain.Receipts.Receipt
                 {
                     TenantId = tenantId,
-                    FileObjectId = file.Id,     
+                    FileObjectId = file.Id,
                     Status = "ReadyForPosting"
                 };
 
@@ -59,11 +56,9 @@ namespace DriverLedger.IntegrationTests.Ledger
 
                 await db.SaveChangesAsync();
 
-                // Now that EF has generated IDs, we capture them
                 fileId = file.Id;
                 receiptId = receipt.Id;
 
-                // Ensure receipt points to file if needed
                 if (receipt.FileObjectId != fileId)
                 {
                     receipt.FileObjectId = fileId;
@@ -132,7 +127,11 @@ namespace DriverLedger.IntegrationTests.Ledger
                     .Where(x => x.LedgerEntryId == entryId)
                     .ToListAsync();
 
-                lines.Should().HaveCount(1);
+                // NEW behavior: receipt posts 2 lines (Expense + Itc)
+                lines.Should().HaveCount(2);
+
+                lines.Should().ContainSingle(l => l.LineType == "Expense");
+                lines.Should().ContainSingle(l => l.LineType == "Itc");
             }
         }
     }

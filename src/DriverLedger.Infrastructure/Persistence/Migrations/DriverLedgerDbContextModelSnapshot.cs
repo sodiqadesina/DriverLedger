@@ -288,6 +288,13 @@ namespace DriverLedger.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("LedgerEntryId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<string>("LineType")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)")
+                        .HasDefaultValue("Fee");
+
                     b.Property<string>("Memo")
                         .HasMaxLength(400)
                         .HasColumnType("nvarchar(400)");
@@ -318,6 +325,9 @@ namespace DriverLedger.Infrastructure.Persistence.Migrations
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<Guid?>("StatementLineId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("TenantId")
                         .HasColumnType("uniqueidentifier");
 
                     b.HasKey("Id");
@@ -723,6 +733,17 @@ namespace DriverLedger.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<string>("CurrencyCode")
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)");
+
+                    b.Property<string>("CurrencyEvidence")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasDefaultValue("Inferred");
+
                     b.Property<Guid>("FileObjectId")
                         .HasColumnType("uniqueidentifier");
 
@@ -747,13 +768,25 @@ namespace DriverLedger.Infrastructure.Persistence.Migrations
                         .HasMaxLength(50)
                         .HasColumnType("nvarchar(50)");
 
+                    b.Property<decimal?>("StatementTotalAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(30)
                         .HasColumnType("nvarchar(30)");
 
+                    b.Property<decimal?>("TaxAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("VendorName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
 
                     b.HasKey("Id");
 
@@ -769,17 +802,32 @@ namespace DriverLedger.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
 
-                    b.Property<decimal>("Amount")
-                        .HasPrecision(18, 2)
-                        .HasColumnType("decimal(18,2)");
+                    b.Property<string>("ClassificationEvidence")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasDefaultValue("Inferred");
 
-                    b.Property<string>("Currency")
+                    b.Property<string>("CurrencyCode")
                         .HasMaxLength(3)
                         .HasColumnType("nvarchar(3)");
+
+                    b.Property<string>("CurrencyEvidence")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasDefaultValue("Inferred");
 
                     b.Property<string>("Description")
                         .HasMaxLength(400)
                         .HasColumnType("nvarchar(400)");
+
+                    b.Property<bool>("IsMetric")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
 
                     b.Property<DateOnly>("LineDate")
                         .HasColumnType("date");
@@ -788,6 +836,18 @@ namespace DriverLedger.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasMaxLength(30)
                         .HasColumnType("nvarchar(30)");
+
+                    b.Property<string>("MetricKey")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<decimal?>("MetricValue")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("decimal(18,4)");
+
+                    b.Property<decimal?>("MoneyAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
 
                     b.Property<Guid>("StatementId")
                         .HasColumnType("uniqueidentifier");
@@ -798,6 +858,10 @@ namespace DriverLedger.Infrastructure.Persistence.Migrations
 
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Unit")
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
 
                     b.HasKey("Id");
 

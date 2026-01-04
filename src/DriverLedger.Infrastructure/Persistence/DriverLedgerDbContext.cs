@@ -166,6 +166,7 @@ namespace DriverLedger.Infrastructure.Persistence
                 b.Property(x => x.Amount).HasPrecision(18, 2);
                 b.Property(x => x.GstHst).HasPrecision(18, 2);
                 b.Property(x => x.DeductiblePct).HasPrecision(5, 4);
+                b.Property(x => x.LineType).HasMaxLength(30).HasDefaultValue("Fee");
             });
 
             modelBuilder.Entity<LedgerSourceLink>(b =>
@@ -194,8 +195,6 @@ namespace DriverLedger.Infrastructure.Persistence
                 b.HasIndex(x => x.FileObjectId);
             });
 
-
-
             modelBuilder.Entity<LedgerSnapshot>(b =>
             {
                 b.HasIndex(x => new { x.TenantId, x.PeriodType, x.PeriodKey }).IsUnique();
@@ -218,10 +217,19 @@ namespace DriverLedger.Infrastructure.Persistence
             {
                 b.ToTable("Statements");
                 b.HasIndex(x => new { x.TenantId, x.Provider, x.PeriodType, x.PeriodKey }).IsUnique();
+
                 b.Property(x => x.Provider).HasMaxLength(50).IsRequired();
                 b.Property(x => x.PeriodType).HasMaxLength(20).IsRequired();
                 b.Property(x => x.PeriodKey).HasMaxLength(20).IsRequired();
                 b.Property(x => x.Status).HasMaxLength(30).IsRequired();
+                b.Property(x => x.VendorName).HasMaxLength(200);
+
+                b.Property(x => x.StatementTotalAmount).HasPrecision(18, 2);
+                b.Property(x => x.TaxAmount).HasPrecision(18, 2);
+
+                b.Property(x => x.CurrencyCode).HasMaxLength(3);
+                b.Property(x => x.CurrencyEvidence).HasMaxLength(16).HasDefaultValue("Inferred");
+
                 b.HasMany(x => x.Lines)
                     .WithOne(x => x.Statement)
                     .HasForeignKey(x => x.StatementId)
@@ -232,10 +240,21 @@ namespace DriverLedger.Infrastructure.Persistence
             {
                 b.ToTable("StatementLines");
                 b.HasIndex(x => new { x.TenantId, x.StatementId, x.LineDate });
+
                 b.Property(x => x.LineType).HasMaxLength(30).IsRequired();
                 b.Property(x => x.Description).HasMaxLength(400);
-                b.Property(x => x.Currency).HasMaxLength(3);
-                b.Property(x => x.Amount).HasPrecision(18, 2);
+
+                b.Property(x => x.CurrencyCode).HasMaxLength(3);
+                b.Property(x => x.CurrencyEvidence).HasMaxLength(16).HasDefaultValue("Inferred");
+                b.Property(x => x.ClassificationEvidence).HasMaxLength(16).HasDefaultValue("Inferred");
+
+                b.Property(x => x.IsMetric).HasDefaultValue(false);
+
+                b.Property(x => x.MetricKey).HasMaxLength(64);
+                b.Property(x => x.Unit).HasMaxLength(16);
+                b.Property(x => x.MetricValue).HasPrecision(18, 4);
+
+                b.Property(x => x.MoneyAmount).HasPrecision(18, 2);
                 b.Property(x => x.TaxAmount).HasPrecision(18, 2);
             });
 
@@ -281,7 +300,6 @@ namespace DriverLedger.Infrastructure.Persistence
                 b.Property(x => x.Severity).HasMaxLength(16);
                 b.Property(x => x.Status).HasMaxLength(16);
             });
-
 
             // Global tenant filter (applies to any entity implementing ITenantScoped)
             foreach (var entityType in modelBuilder.Model.GetEntityTypes())

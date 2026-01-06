@@ -1,9 +1,19 @@
+using System.Globalization;
 using System.Text.RegularExpressions;
 
 namespace DriverLedger.Infrastructure.Statements.Extraction;
 
 internal static class LyftStatementTextFallback
 {
+    // Lyft PDFs often lay out like:
+    //   <Label>
+    //   <Amount>
+    // or
+    //   <Label>  <Amount>
+    //
+    // This fallback is INTENTIONALLY “Lyft-specific” and “label-driven” so it doesn’t
+    // accidentally pick up random numbers from the page.
+
     public static List<StatementLineNormalized> TryExtract(string analyzedContent)
     {
         if (string.IsNullOrWhiteSpace(analyzedContent))
@@ -18,55 +28,59 @@ internal static class LyftStatementTextFallback
 
         var results = new List<StatementLineNormalized>();
 
-        // Finds the first numeric value on the same line OR within the next N lines after a matching label line.
-        static decimal? FindAmountNearLabel(IReadOnlyList<string> src, string labelPattern, int lookAhead = 4)
+        // Pre-extract canonical label amounts so we can safely decide duplicates (bonuses vs fees)
+        decimal? grossFares = FindMoneyNearLabel(lines, @"\bGross\s+fares\b", lookAhead: 6);
+        decimal? bonuses = FindMoneyNearLabel(lines, @"\bBonuses\b", lookAhead: 6);
+        decimal? tips = FindMoneyNearLabel(lines, @"\bTips\b(?!.*GST)(?!.*HST)", lookAhead: 6);
+        decimal? lyftFees = FindMoneyNearLabel(lines, @"\bLyft\s*&\s*3rd\s+party\s+fees\b", lookAhead: 6);
+        decimal? tolls = FindMoneyNearLabel(lines, @"\bTolls\b", lookAhead: 6);
+
+        decimal? taxReceivedFromPassengers = FindMoneyNearLabel(lines, @"\bGST\s*/\s*HST\s+received\s+from\s+passengers\b", lookAhead: 6);
+        decimal? taxReceivedOnBonuses = FindMoneyNearLabel(lines, @"\bGST\s*/\s*HST\s+received\s+on\s+bonuses\b", lookAhead: 6);
+        decimal? itcPaid = FindMoneyNearLabel(lines, @"\bGST\s*/\s*HST\s+paid\s+on\s+Lyft\s+and\s+3rd\s+party\s+fees\b", lookAhead: 6);
+
+        // ===== Metrics =====
+        AddRideDistanceMetric();
+        AddTotalRidesMetric(); //  Total Rides is a metric (NOT income) — always metric
+
+        // ===== Income (money) =====
+        // Add Gross fares
+        if (grossFares.HasValue)
+            results.Add(MoneyLine("Income", "Gross fares", grossFares.Value));
+
+        // Add Bonuses — but guard: do not emit a bonuses Income if it exactly equals Lyft fees (likely mis-extract)
+        if (bonuses.HasValue)
         {
-            for (var i = 0; i < src.Count; i++)
+            if (!lyftFees.HasValue || decimal.Round(bonuses.Value, 2, MidpointRounding.AwayFromZero) != decimal.Round(lyftFees.Value, 2, MidpointRounding.AwayFromZero))
             {
-                var l = src[i];
-
-                if (!Regex.IsMatch(l, labelPattern, RegexOptions.IgnoreCase))
-                    continue;
-
-                // 1) Try same line
-                var amt = StatementExtractionParsing.ParseAmount(l);
-                if (amt.HasValue) return amt.Value;
-
-                // 2) Try subsequent lines (common PDF layout: label line then amount line)
-                for (var j = 1; j <= lookAhead && (i + j) < src.Count; j++)
-                {
-                    var next = src[i + j];
-                    amt = StatementExtractionParsing.ParseAmount(next);
-                    if (amt.HasValue) return amt.Value;
-                }
-
-                return null;
+                results.Add(MoneyLine("Income", "Bonuses", bonuses.Value));
             }
-
-            return null;
         }
 
-        // ===== Metrics: Ride distance (source of truth) =====
-        // Prefer the centralized parser so you can keep logic in one place.
-        AddRideDistanceMetric();
+        // Add Tips
+        if (tips.HasValue)
+            results.Add(MoneyLine("Income", "Tips", tips.Value));
 
-        // ---- Income (not including GST/HST) ----
-        AddIncome("Gross fares", @"\bGross\s+fares\b");
-        AddIncome("Bonuses", @"\bBonuses\b");
-        AddIncome("Tips", @"\bTips\b(?!.*GST)");
+        // ===== Fees (money) =====
+        if (lyftFees.HasValue)
+            results.Add(MoneyLine("Fee", "Lyft & 3rd party fees", lyftFees.Value));
 
-        // ---- Fees ----
-        AddFee("Lyft & 3rd party fees", @"\bLyft\s*&\s*3rd\s+party\s+fees\b");
-        AddFee("3rd party fees", @"\b3rd\s+party\s+fees\b"); // optional extra
+        if (tolls.HasValue)
+            results.Add(MoneyLine("Fee", "Tolls", tolls.Value));
 
-        // ---- Tax collected (you remit) ----
-        AddTaxCollected("GST/HST received from passengers", @"\bGST\s*/\s*HST\s+received\s+from\s+passengers\b");
-        AddTaxCollected("GST/HST received on bonuses", @"\bGST\s*/\s*HST\s+received\s+on\s+bonuses\b");
+        // ===== Tax Collected (tax-only) =====
+        // For tax semantics we populate TaxAmount (NOT MoneyAmount).
+        if (taxReceivedFromPassengers.HasValue)
+            results.Add(TaxLine("TaxCollected", "GST/HST received from passengers", taxReceivedFromPassengers.Value));
 
-        // ---- ITC ----
-        AddItc("GST/HST paid on Lyft and 3rd party fees", @"\bGST\s*/\s*HST\s+paid\s+on\s+Lyft\s+and\s+3rd\s+party\s+fees\b");
+        if (taxReceivedOnBonuses.HasValue)
+            results.Add(TaxLine("TaxCollected", "GST/HST received on bonuses", taxReceivedOnBonuses.Value));
 
-        // Only return if we found meaningful amounts or metrics
+        // ===== ITC (tax-only) =====
+        if (itcPaid.HasValue)
+            results.Add(TaxLine("Itc", "GST/HST paid on Lyft and 3rd party fees", itcPaid.Value));
+
+        // Only return if meaningful
         var anyNonZero = results.Any(x =>
             (x.MoneyAmount.HasValue && x.MoneyAmount.Value != 0m) ||
             (x.TaxAmount.HasValue && x.TaxAmount.Value != 0m) ||
@@ -74,7 +88,47 @@ internal static class LyftStatementTextFallback
 
         return anyNonZero ? results : new List<StatementLineNormalized>();
 
-        // ---- local helpers ----
+        // ---------------- local helpers ----------------
+
+        // create an Income/Fee/Expense line that uses MoneyAmount (TaxAmount stays null)
+        StatementLineNormalized MoneyLine(string lineType, string desc, decimal amt) =>
+            new(
+                LineDate: DateOnly.MinValue,
+                LineType: lineType,
+                Description: desc,
+
+                IsMetric: false,
+                MoneyAmount: Math.Abs(amt),
+                MetricValue: null,
+                MetricKey: null,
+                Unit: null,
+
+                CurrencyCode: "CAD",
+                CurrencyEvidence: "Extracted",
+                ClassificationEvidence: "Extracted",
+
+                TaxAmount: null
+            );
+
+        // create a TaxCollected/Itc line that uses TaxAmount (MoneyAmount null)
+        StatementLineNormalized TaxLine(string lineType, string desc, decimal amt) =>
+            new(
+                LineDate: DateOnly.MinValue,
+                LineType: lineType,
+                Description: desc,
+
+                IsMetric: false,
+                MoneyAmount: null,
+                MetricValue: null,
+                MetricKey: null,
+                Unit: null,
+
+                CurrencyCode: "CAD",
+                CurrencyEvidence: "Extracted",
+                ClassificationEvidence: "Extracted",
+
+                TaxAmount: Math.Abs(amt)
+            );
 
         void AddRideDistanceMetric()
         {
@@ -102,100 +156,107 @@ internal static class LyftStatementTextFallback
             }
         }
 
-        void AddIncome(string desc, string labelPattern)
+        void AddTotalRidesMetric()
         {
-            var amt = FindAmountNearLabel(lines, labelPattern);
-            if (!amt.HasValue) return;
+            var rides = FindIntNearLabel(lines, @"\bTotal\s+Rides\b", lookAhead: 6);
+            if (!rides.HasValue) return;
 
             results.Add(new StatementLineNormalized(
                 LineDate: DateOnly.MinValue,
-                LineType: "Income",
-                Description: desc,
-
-                IsMetric: false,
-                MoneyAmount: Math.Abs(amt.Value),
-                MetricValue: null,
-                MetricKey: null,
-                Unit: null,
-
+                LineType: "Metric",
+                Description: "Total Rides",
                 CurrencyCode: "CAD",
-                CurrencyEvidence: "Extracted",
+                CurrencyEvidence: "Inferred",
                 ClassificationEvidence: "Extracted",
-
+                IsMetric: true,
+                MetricKey: "Trips",
+                MetricValue: rides.Value,
+                Unit: "trips",
+                MoneyAmount: null,
                 TaxAmount: null
             ));
         }
+    }
 
-        void AddFee(string desc, string labelPattern)
+    // ---------------- parsing helpers ----------------
+
+    // Money: we only trust values that look like money (2 decimals),
+    // which prevents “104558”, “792383085RP0001”, etc.
+    private static readonly Regex MoneyRegex =
+        new(@"(?<!\d)(\d{1,3}(?:[,\s]\d{3})*(?:\.\d{2})|\d+\.\d{2})(?!\d)",
+            RegexOptions.Compiled);
+
+    private static decimal? FindMoneyNearLabel(IReadOnlyList<string> src, string labelPattern, int lookAhead = 4)
+    {
+        for (var i = 0; i < src.Count; i++)
         {
-            var amt = FindAmountNearLabel(lines, labelPattern);
-            if (!amt.HasValue) return;
+            var line = src[i];
 
-            results.Add(new StatementLineNormalized(
-                LineDate: DateOnly.MinValue,
-                LineType: "Fee",
-                Description: desc,
+            if (!Regex.IsMatch(line, labelPattern, RegexOptions.IgnoreCase))
+                continue;
 
-                IsMetric: false,
-                MoneyAmount: Math.Abs(amt.Value),
-                MetricValue: null,
-                MetricKey: null,
-                Unit: null,
+            // 1) same line
+            {
+                var m = MoneyRegex.Match(line);
+                if (m.Success)
+                {
+                    var amt = StatementExtractionParsing.ParseAmount(m.Value);
+                    if (amt.HasValue) return amt.Value;
+                }
+            }
 
-                CurrencyCode: "CAD",
-                CurrencyEvidence: "Extracted",
-                ClassificationEvidence: "Extracted",
+            // 2) next lines
+            for (var j = 1; j <= lookAhead && (i + j) < src.Count; j++)
+            {
+                var next = src[i + j];
 
-                TaxAmount: null
-            ));
+                var m = MoneyRegex.Match(next);
+                if (!m.Success) continue;
+
+                var amt = StatementExtractionParsing.ParseAmount(m.Value);
+                if (amt.HasValue) return amt.Value;
+            }
+
+            return null;
         }
 
-        void AddTaxCollected(string desc, string labelPattern)
+        return null;
+    }
+
+    // Total Rides is typically an integer. We treat it as a metric and never as money.
+    private static readonly Regex IntRegex =
+        new(@"(?<!\d)(\d{1,6})(?!\d)", RegexOptions.Compiled);
+
+    private static decimal? FindIntNearLabel(IReadOnlyList<string> src, string labelPattern, int lookAhead = 4)
+    {
+        for (var i = 0; i < src.Count; i++)
         {
-            var amt = FindAmountNearLabel(lines, labelPattern);
-            if (!amt.HasValue) return;
+            var line = src[i];
 
-            results.Add(new StatementLineNormalized(
-                LineDate: DateOnly.MinValue,
-                LineType: "TaxCollected",
-                Description: desc,
+            if (!Regex.IsMatch(line, labelPattern, RegexOptions.IgnoreCase))
+                continue;
 
-                IsMetric: false,
-                MoneyAmount: 0m,
-                MetricValue: null,
-                MetricKey: null,
-                Unit: null,
+            // same line
+            {
+                var m = IntRegex.Match(line);
+                if (m.Success && decimal.TryParse(m.Value, NumberStyles.Number, CultureInfo.InvariantCulture, out var v))
+                    return v;
+            }
 
-                CurrencyCode: "CAD",
-                CurrencyEvidence: "Extracted",
-                ClassificationEvidence: "Extracted",
+            // next lines
+            for (var j = 1; j <= lookAhead && (i + j) < src.Count; j++)
+            {
+                var next = src[i + j];
+                var m = IntRegex.Match(next);
+                if (!m.Success) continue;
 
-                TaxAmount: Math.Abs(amt.Value)
-            ));
+                if (decimal.TryParse(m.Value, NumberStyles.Number, CultureInfo.InvariantCulture, out var v))
+                    return v;
+            }
+
+            return null;
         }
 
-        void AddItc(string desc, string labelPattern)
-        {
-            var amt = FindAmountNearLabel(lines, labelPattern);
-            if (!amt.HasValue) return;
-
-            results.Add(new StatementLineNormalized(
-                LineDate: DateOnly.MinValue,
-                LineType: "Itc",
-                Description: desc,
-
-                IsMetric: false,
-                MoneyAmount: 0m,
-                MetricValue: null,
-                MetricKey: null,
-                Unit: null,
-
-                CurrencyCode: "CAD",
-                CurrencyEvidence: "Extracted",
-                ClassificationEvidence: "Extracted",
-
-                TaxAmount: Math.Abs(amt.Value)
-            ));
-        }
+        return null;
     }
 }

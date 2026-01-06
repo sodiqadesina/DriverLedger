@@ -3,7 +3,6 @@ using Azure.AI.FormRecognizer.DocumentAnalysis;
 using DriverLedger.Infrastructure.Options;
 using Microsoft.Extensions.Options;
 
-
 namespace DriverLedger.Infrastructure.Statements.Extraction;
 
 public sealed class AzureDocumentIntelligenceStatementExtractor : IStatementExtractor
@@ -99,6 +98,77 @@ public sealed class AzureDocumentIntelligenceStatementExtractor : IStatementExtr
         return ms;
     }
 
+    // ============================================================
+    // ✅ THIS is the “normalize before StatementLineNormalized” hook
+    // ============================================================
+    private static (decimal? MoneyAmount, decimal? TaxAmount, bool IsMetric, string? MetricKey, decimal? MetricValue, string? Unit)
+        NormalizeAmountsForLineType(
+            string resolvedLineType,
+            string? description,
+            decimal? amount,
+            decimal? taxAmount)
+    {
+        // 1) Force known metric labels into Metric
+        // Example: "Total Rides 467" should NEVER be Income.
+        var desc = (description ?? string.Empty).Trim();
+
+        if (desc.Contains("total rides", StringComparison.OrdinalIgnoreCase) ||
+            desc.Equals("total rides", StringComparison.OrdinalIgnoreCase))
+        {
+            resolvedLineType = "Metric";
+            return (
+                MoneyAmount: null,
+                TaxAmount: null,
+                IsMetric: true,
+                MetricKey: "Trips",
+                MetricValue: amount.HasValue ? Math.Abs(amount.Value) : null,
+                Unit: "trips"
+            );
+        }
+
+        // 2) Normalization rules
+        if (string.Equals(resolvedLineType, "Metric", StringComparison.OrdinalIgnoreCase))
+        {
+            // Metric lines: no money/tax
+            var metric = ResolveMetricKeyAndUnitLocal(desc);
+
+            return (
+                MoneyAmount: null,
+                TaxAmount: null,
+                IsMetric: true,
+                MetricKey: metric.MetricKey,
+                MetricValue: amount,
+                Unit: metric.Unit
+            );
+        }
+
+        if (string.Equals(resolvedLineType, "TaxCollected", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(resolvedLineType, "Itc", StringComparison.OrdinalIgnoreCase))
+        {
+            // Tax-only lines: store amount in TaxAmount ONLY
+            // IMPORTANT: we do NOT want this to hit MoneyAmount.
+            var v = taxAmount ?? amount;
+            return (
+                MoneyAmount: null,
+                TaxAmount: v.HasValue && v.Value != 0m ? Math.Abs(v.Value) : null,
+                IsMetric: false,
+                MetricKey: null,
+                MetricValue: null,
+                Unit: null
+            );
+        }
+
+        // Monetary lines: store amount in MoneyAmount ONLY
+        return (
+            MoneyAmount: amount.HasValue ? Math.Abs(amount.Value) : null,
+            TaxAmount: null,
+            IsMetric: false,
+            MetricKey: null,
+            MetricValue: null,
+            Unit: null
+        );
+    }
+
     private static List<StatementLineNormalized> ParseInvoiceItems(
         DocumentField itemsField,
         IReadOnlyDictionary<string, DocumentField> docFields)
@@ -130,23 +200,18 @@ public sealed class AzureDocumentIntelligenceStatementExtractor : IStatementExtr
                     TryGetString(dict, "Name"),
                     TryGetString(dict, "Item"));
 
-            // Prefer ParseAmount so we don’t treat junk as 0.
-            var rawAmountText = TryGetString(dict, "Amount");
-            var rawTaxText = TryGetString(dict, "Tax");
+            var rawAmountText = FindMoneyField(dict, "Amount", "Total", "Value", "Net");
+            var rawTaxText = FindTaxField(dict);
+
             var amount = StatementExtractionParsing.ParseAmount(rawAmountText);
             var tax = StatementExtractionParsing.ParseAmount(rawTaxText);
+
 
             var resolvedLineType = StatementExtractionParsing.ResolveLineType(
                 rawType: null,
                 amount: amount,
                 taxAmount: tax,
                 description: description);
-
-            var isMetric = string.Equals(resolvedLineType, "Metric", StringComparison.OrdinalIgnoreCase);
-
-            var (metricKey, unit) = isMetric
-                ? StatementExtractionParsing.ResolveMetricKeyAndUnit(null, description)
-                : (null, null);
 
             // Currency normalization + evidence
             var (currencyCode, currencyEvidence) = StatementExtractionParsing.ResolveCurrencyCode(
@@ -157,39 +222,30 @@ public sealed class AzureDocumentIntelligenceStatementExtractor : IStatementExtr
             var classificationEvidence =
                 StatementExtractionParsing.ResolveClassificationEvidence(rawType: null, resolvedLineType);
 
-            // Money vs Metric value
-            decimal? moneyAmount = null;
-            decimal? metricValue = null;
-
-            if (isMetric)
-            {
-                // Metric rows should not carry money into ledger.
-                // For invoice items, metric value might be embedded in Amount cell or description.
-                metricValue = amount;
-            }
-            else
-            {
-                // Only monetary line types carry MoneyAmount
-                // Keep your old convention: amounts stored as abs (sign not important here).
-                moneyAmount = amount.HasValue ? Math.Abs(amount.Value) : null;
-            }
+            // ✅ APPLY NORMALIZATION RIGHT HERE (before record creation)
+            var normalized = NormalizeAmountsForLineType(
+                resolvedLineType,
+                description,
+                amount,
+                tax);
 
             lines.Add(new StatementLineNormalized(
                 LineDate: docDate,
                 LineType: resolvedLineType,
                 Description: description ?? "Statement item",
 
-                IsMetric: isMetric,
-                MoneyAmount: moneyAmount,
-                MetricValue: metricValue,
-                MetricKey: metricKey,
-                Unit: unit,
-
                 CurrencyCode: currencyCode,
                 CurrencyEvidence: currencyEvidence,
+
                 ClassificationEvidence: classificationEvidence,
 
-                TaxAmount: tax.HasValue && tax.Value != 0m ? Math.Abs(tax.Value) : null
+                IsMetric: normalized.IsMetric,
+                MetricKey: normalized.MetricKey,
+                MetricValue: normalized.MetricValue,
+                Unit: normalized.Unit,
+
+                MoneyAmount: normalized.MoneyAmount,
+                TaxAmount: normalized.TaxAmount
             ));
         }
 
@@ -197,7 +253,8 @@ public sealed class AzureDocumentIntelligenceStatementExtractor : IStatementExtr
     }
 
     private static List<StatementLineNormalized> ParseTables(
-    IReadOnlyList<DocumentTable> tables, IReadOnlyDictionary<string, DocumentField>? fields)
+        IReadOnlyList<DocumentTable> tables,
+        IReadOnlyDictionary<string, DocumentField>? fields)
     {
         var lines = new List<StatementLineNormalized>();
 
@@ -225,13 +282,16 @@ public sealed class AzureDocumentIntelligenceStatementExtractor : IStatementExtr
                         LineDate: DateOnly.MinValue,
                         LineType: "Metric",
                         Description: rowText,
+
                         CurrencyCode: null,
                         CurrencyEvidence: "Inferred",
                         ClassificationEvidence: "Extracted",
+
                         IsMetric: true,
                         MetricKey: mk,
                         MetricValue: mv,
                         Unit: unit,
+
                         MoneyAmount: null,
                         TaxAmount: null
                     ));
@@ -240,39 +300,65 @@ public sealed class AzureDocumentIntelligenceStatementExtractor : IStatementExtr
 
                 // 2) monetary parse: take last cell as amount candidate
                 var amountText = cells.Last();
-                var money = StatementExtractionParsing.ParseAmount(amountText);
-
-                if (!money.HasValue) continue;
+                var amount = StatementExtractionParsing.ParseAmount(amountText);
+                if (!amount.HasValue) continue;
 
                 var currency = StatementExtractionParsing.ExtractCurrency(rowText) ??
                                StatementExtractionParsing.ExtractCurrency(amountText);
 
-                var lineType = StatementExtractionParsing.ResolveLineType(
+                // Optional: try parse a tax cell if present
+                // (some tables have "... | Tax | Amount" style layouts)
+                decimal? taxAmount = null;
+                if (cells.Count >= 2)
+                {
+                    // heuristically check second-last cell
+                    var maybeTaxText = cells[^2];
+                    var maybeTax = StatementExtractionParsing.ParseAmount(maybeTaxText);
+                    // only treat it as tax if it looks small-ish and row mentions gst/hst
+                    if (maybeTax.HasValue &&
+                        (rowText.Contains("gst", StringComparison.OrdinalIgnoreCase) ||
+                         rowText.Contains("hst", StringComparison.OrdinalIgnoreCase) ||
+                         rowText.Contains("tax", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        taxAmount = maybeTax;
+                    }
+                }
+
+                var resolvedLineType = StatementExtractionParsing.ResolveLineType(
                     rawType: null,
-                    amount: money.Value,
-                    taxAmount: null,
+                    amount: amount,
+                    taxAmount: taxAmount,
                     description: rowText);
+
+                //  APPLY NORMALIZATION 
+                var normalized = NormalizeAmountsForLineType(
+                    resolvedLineType,
+                    rowText,
+                    amount,
+                    taxAmount);
 
                 lines.Add(new StatementLineNormalized(
                     LineDate: DateOnly.MinValue,
-                    LineType: lineType,
+                    LineType: resolvedLineType,
                     Description: rowText,
+
                     CurrencyCode: currency,
                     CurrencyEvidence: currency is null ? "Inferred" : "Extracted",
                     ClassificationEvidence: "Inferred",
-                    IsMetric: false,
-                    MetricKey: null,
-                    MetricValue: null,
-                    Unit: null,
-                    MoneyAmount: Math.Abs(money.Value),
-                    TaxAmount: null
+
+                    IsMetric: normalized.IsMetric,
+                    MetricKey: normalized.MetricKey,
+                    MetricValue: normalized.MetricValue,
+                    Unit: normalized.Unit,
+
+                    MoneyAmount: normalized.MoneyAmount,
+                    TaxAmount: normalized.TaxAmount
                 ));
             }
         }
 
         return lines;
     }
-
 
     // === helpers ===
 
@@ -323,6 +409,7 @@ public sealed class AzureDocumentIntelligenceStatementExtractor : IStatementExtr
         }
     }
 
+
     private static string? TryGetString(
         IReadOnlyDictionary<string, DocumentField> dict,
         string key)
@@ -335,4 +422,89 @@ public sealed class AzureDocumentIntelligenceStatementExtractor : IStatementExtr
         if (!TryGetField(dict, key, out var f)) return null;
         return StatementExtractionParsing.ParseDate(f.Content);
     }
+    private static (string? MetricKey, string? Unit) ResolveMetricKeyAndUnitLocal(string? description)
+    {
+        var desc = (description ?? string.Empty).Trim().ToLowerInvariant();
+
+        // trips / total rides
+        if (desc.Contains("total rides") || (desc.Contains("rides") && desc.Contains("total")))
+            return ("Trips", "trips");
+
+        if (desc.Contains("trip") && (desc.Contains("count") || desc.Contains("total")))
+            return ("Trips", "trips");
+
+        // distance
+        if (desc.Contains("kilomet") || desc.Contains(" km"))
+            return ("RideKilometers", "km");
+
+        if (desc.Contains(" mile") || desc.Contains(" mi"))
+            return ("RideMiles", "mi");
+
+        // online hours, etc (optional)
+        if (desc.Contains("online hour") || desc.Contains("hours online") || desc.Contains("online time"))
+            return ("OnlineHours", "hours");
+
+        return (null, null);
+    }
+
+    private static string? FindMoneyField(
+        IReadOnlyDictionary<string, DocumentField> dict,
+        params string[] preferredKeys)
+    {
+        // 1) Exact preferred keys
+        foreach (var k in preferredKeys)
+        {
+            var v = TryGetString(dict, k);
+            if (!string.IsNullOrWhiteSpace(v))
+                return v;
+        }
+
+        // 2) Heuristic: keys containing these tokens
+        var tokens = new[] { "amount", "total", "value", "tax", "gst", "hst" };
+
+        foreach (var kvp in dict)
+        {
+            var key = kvp.Key ?? string.Empty;
+            if (tokens.Any(t => key.Contains(t, StringComparison.OrdinalIgnoreCase)))
+            {
+                // Only call TryGetString if key is not null or empty
+                if (!string.IsNullOrEmpty(key))
+                {
+                    var v = TryGetString(dict, key);
+                    if (!string.IsNullOrWhiteSpace(v))
+                        return v;
+                }
+            }
+        }
+
+        // 3) Last resort: any field that parses as an amount
+        foreach (var kvp in dict)
+        {
+            var key = kvp.Key;
+            if (string.IsNullOrEmpty(key)) continue;
+
+            var v = TryGetString(dict, key);
+            if (string.IsNullOrWhiteSpace(v)) continue;
+
+            if (StatementExtractionParsing.ParseAmount(v).HasValue)
+                return v;
+        }
+
+        return null;
+    }
+
+    private static string? FindTaxField(IReadOnlyDictionary<string, DocumentField> dict)
+    {
+        // Try common DI variants first
+        return FindMoneyField(dict,
+            "Tax",
+            "TaxAmount",
+            "GST",
+            "HST",
+            "GST/HST",
+            "GSTHST",
+            "SalesTax");
+    }
+
+
 }

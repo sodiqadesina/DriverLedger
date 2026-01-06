@@ -76,21 +76,22 @@ namespace DriverLedger.Api.Modules.Statements
                     });
                 }
 
-                var periodType = metadata.PeriodType ?? "Unknown";
-                var periodKey = metadata.PeriodKey ?? "Unknown";
+                var periodType = (metadata.PeriodType ?? "Unknown").Trim();
+                var periodKey = (metadata.PeriodKey ?? "Unknown").Trim();
                 var periodStart = metadata.PeriodStart ?? DateOnly.MinValue;
                 var periodEnd = metadata.PeriodEnd ?? DateOnly.MinValue;
 
                 // ---------------------------
-                //  DEDUPE (before blob/DB)
+                // DEDUPE (before blob/DB)
                 // ---------------------------
 
-                // 1) Business-key dedupe: same provider+period for the same tenant
+                // Business-key dedupe: same provider+periodType+periodKey for the same tenant
                 var existingStatement = await db.Statements
                     .Where(x => x.TenantId == tenantId
                              && x.Provider == provider
+                             && x.PeriodType == periodType
                              && x.PeriodKey == periodKey)
-                    .Select(x => new { x.Id, x.Status, x.FileObjectId })
+                    .Select(x => new { x.Id, x.Status })
                     .FirstOrDefaultAsync(ct);
 
                 if (existingStatement is not null)
@@ -98,15 +99,16 @@ namespace DriverLedger.Api.Modules.Statements
                     return Results.Conflict(new
                     {
                         error = "Duplicate statement detected",
-                        message = $"A {provider} statement for period '{periodKey}' already exists.",
+                        message = $"A {provider} {periodType} statement for period '{periodKey}' already exists.",
                         provider,
+                        periodType,
                         periodKey,
                         existingStatementId = existingStatement.Id,
                         existingStatus = existingStatement.Status
                     });
                 }
 
-                // 2) Exact-file dedupe: same sha256 already uploaded for this tenant
+                // Exact-file dedupe: same sha256 already uploaded for this tenant
                 var existingFile = await db.FileObjects
                     .Where(x => x.TenantId == tenantId
                              && x.Source == "StatementUpload"
@@ -127,19 +129,41 @@ namespace DriverLedger.Api.Modules.Statements
                 }
 
                 // ---------------------------
-                //  Deterministic blob path
-                // (prevents duplicate blob objects)
+                // Most granular wins (posting rule), BUT always store the statement.
+                // Use PeriodStart.Year (EF-safe + consistent).
+                // ---------------------------
+
+                var year = periodStart.Year;
+                var incomingRank = GetGranularityRank(periodType);
+
+                var existingTypesThisYear = await db.Statements
+                    .Where(s => s.TenantId == tenantId
+                             && s.Provider == provider
+                             && s.PeriodStart.Year == year)
+                    .Select(s => s.PeriodType)
+                    .ToListAsync(ct);
+
+                var mostGranularExistingRank = existingTypesThisYear.Count == 0
+                    ? 0
+                    : existingTypesThisYear.Max(GetGranularityRank);
+
+                // If incoming is less granular than what's already present -> store only (reconciliation)
+                var shouldAutoSubmit = incomingRank >= mostGranularExistingRank;
+
+                // ---------------------------
+                // Deterministic blob path
                 // ---------------------------
                 var safeProvider = Sanitize(provider).Replace(' ', '_');
                 var safePeriodKey = Sanitize(periodKey).Replace(' ', '_');
                 var blobPath = $"{tenantId}/statements/{safeProvider}/{safePeriodKey}/{sha256}.pdf";
 
-                // Only persist after validation + dedupe
+                // Upload to blob
                 using (var uploadStream = new MemoryStream(bytes, writable: false))
                 {
                     await blobStorage.UploadAsync(blobPath, uploadStream, file.ContentType, ct);
                 }
 
+                // Create FileObject
                 var fileObject = new FileObject
                 {
                     TenantId = tenantId,
@@ -154,6 +178,7 @@ namespace DriverLedger.Api.Modules.Statements
                 db.FileObjects.Add(fileObject);
                 await db.SaveChangesAsync(ct);
 
+                // Create Statement
                 var statement = new Statement
                 {
                     TenantId = tenantId,
@@ -173,7 +198,25 @@ namespace DriverLedger.Api.Modules.Statements
                 db.Statements.Add(statement);
                 await db.SaveChangesAsync(ct);
 
-                // Auto-submit (same as /submit)
+                // If it loses to a more granular existing statement, keep it saved only
+                if (!shouldAutoSubmit)
+                {
+                    statement.Status = "ReconciliationOnly";
+                    await db.SaveChangesAsync(ct);
+
+                    return Results.Ok(new
+                    {
+                        statementId = statement.Id,
+                        status = statement.Status,
+                        message = "Statement uploaded and stored for reconciliation only. A more granular statement already exists for this year, so it will not be posted to the ledger.",
+                        provider,
+                        periodType,
+                        periodKey,
+                        year
+                    });
+                }
+
+                // Auto-submit (post to pipeline)
                 statement.Status = "Submitted";
                 await db.SaveChangesAsync(ct);
 
@@ -199,7 +242,12 @@ namespace DriverLedger.Api.Modules.Statements
 
                 await publisher.PublishAsync("q.statement.received", envelope, ct);
 
-                return Results.Accepted($"/api/statements/{statement.Id}", new { statement.Id });
+                return Results.Accepted($"/api/statements/{statement.Id}", new
+                {
+                    statementId = statement.Id,
+                    status = statement.Status,
+                    postedToLedger = true
+                });
             }).DisableAntiforgery();
 
 
@@ -219,9 +267,56 @@ namespace DriverLedger.Api.Modules.Statements
                 if (statement is null)
                     return Results.NotFound();
 
-                //  idempotent-ish: if already submitted, just return accepted
+                // If already reconciliation-only, block submission
+                if (string.Equals(statement.Status, "ReconciliationOnly", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Results.Conflict(new
+                    {
+                        error = "Posting blocked by granularity rules",
+                        message = "This statement is stored for reconciliation only and cannot be submitted because a more granular statement exists for the same year.",
+                        statementId = statement.Id,
+                        provider = statement.Provider,
+                        periodType = statement.PeriodType,
+                        periodKey = statement.PeriodKey
+                    });
+                }
+
+                // Idempotent-ish: if already submitted, just return accepted
                 if (string.Equals(statement.Status, "Submitted", StringComparison.OrdinalIgnoreCase))
                     return Results.Accepted($"/api/statements/{statement.Id}", new { statement.Id });
+
+                // Enforce "most granular wins" at submit time too
+                var year = statement.PeriodStart.Year;
+                var incomingRank = GetGranularityRank(statement.PeriodType);
+
+                var otherTypesThisYear = await db.Statements
+                    .Where(s => s.TenantId == tenantId
+                             && s.Provider == statement.Provider
+                             && s.Id != statement.Id
+                             && s.PeriodStart.Year == year)
+                    .Select(s => s.PeriodType)
+                    .ToListAsync(ct);
+
+                var mostGranularExistingRank = otherTypesThisYear.Count == 0
+                    ? 0
+                    : otherTypesThisYear.Max(GetGranularityRank);
+
+                if (incomingRank < mostGranularExistingRank)
+                {
+                    statement.Status = "ReconciliationOnly";
+                    await db.SaveChangesAsync(ct);
+
+                    return Results.Conflict(new
+                    {
+                        error = "Posting blocked by granularity rules",
+                        message = "A more granular statement already exists for this year. This statement will be kept for reconciliation only and will not be posted to the ledger.",
+                        statementId = statement.Id,
+                        provider = statement.Provider,
+                        periodType = statement.PeriodType,
+                        periodKey = statement.PeriodKey,
+                        year
+                    });
+                }
 
                 statement.Status = "Submitted";
                 await db.SaveChangesAsync(ct);
@@ -317,5 +412,20 @@ namespace DriverLedger.Api.Modules.Statements
 
         private static bool IsRecognizedProvider(string provider)
             => RecognizedProviders.Contains(provider);
+
+        // Granularity: Monthly (3) > Quarterly (2) > YTD (1)
+        private static int GetGranularityRank(string? periodType)
+        {
+            if (string.IsNullOrWhiteSpace(periodType)) return 0;
+
+            return periodType.Trim().ToLowerInvariant() switch
+            {
+                "monthly" => 3,
+                "quarterly" => 2,
+                "ytd" => 1,
+                "yearly" => 1,
+                _ => 0
+            };
+        }
     }
 }

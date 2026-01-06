@@ -11,12 +11,6 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
         private static readonly Regex NonNumberJunkRegex =
             new(@"[^\d\.\-\(\)]", RegexOptions.Compiled);
 
-        // support thousands separators like 5,178.846 (and OCR variants with spaces)
-        // Matches:
-        // - 5178
-        // - 5178.846
-        // - 5,178.846
-        // - 5 178.846
         private static readonly Regex MetricNumberRegex =
             new(@"(?<num>-?\d{1,3}(?:[,\s]\d{3})*(?:\.\d+)?|-?\d+(?:\.\d+)?)",
                 RegexOptions.Compiled);
@@ -35,7 +29,6 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
 
             var t = rowText.Trim();
 
-            // Strong signals
             var looksLikeDistance =
                 t.Contains("km", StringComparison.OrdinalIgnoreCase) ||
                 t.Contains("kilomet", StringComparison.OrdinalIgnoreCase) ||
@@ -44,20 +37,15 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
 
             if (!looksLikeDistance) return false;
 
-            //  Extract numeric including thousands separators
             var m = MetricNumberRegex.Match(t);
             if (!m.Success) return false;
 
             var raw = m.Groups["num"].Value;
-
-            //  Normalize separators: remove commas and spaces used as thousand separators
-            // Keep decimal dot intact.
             raw = raw.Replace(",", "").Replace(" ", "");
 
             if (!decimal.TryParse(raw, NumberStyles.Number, CultureInfo.InvariantCulture, out var n))
                 return false;
 
-            // Determine unit
             if (Regex.IsMatch(t, @"\bkm\b|kilomet", RegexOptions.IgnoreCase))
             {
                 metricKey = "RideKilometers";
@@ -68,7 +56,6 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
 
             if (Regex.IsMatch(t, @"\bmi\b|mile", RegexOptions.IgnoreCase))
             {
-                // store canonical km as source of truth (convert miles -> km)
                 metricKey = "RideKilometers";
                 unit = "km";
                 metricValue = n * 1.609344m;
@@ -100,24 +87,17 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
             return null;
         }
 
-        /// <summary>
-        /// Parse a currency/amount string into a decimal.
-        /// IMPORTANT: return null if it cannot be parsed (do NOT return 0 as a fallback).
-        /// </summary>
         internal static decimal? ParseAmount(string? value)
         {
             if (string.IsNullOrWhiteSpace(value)) return null;
 
             var cleaned = value.Trim();
 
-            // Common "not a number" tokens coming from OCR/DI tables
             var upper = cleaned.ToUpperInvariant();
             if (upper is "N/A" or "NA" or "NULL" or "-" or "—") return null;
 
-            // Parentheses mean negative in many statements: (123.45)
             var negative = cleaned.Contains("(") && cleaned.Contains(")");
 
-            // Remove obvious currency markers / separators
             cleaned = cleaned
                 .Replace("(", "")
                 .Replace(")", "")
@@ -126,13 +106,11 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
                 .Replace("USD", "", StringComparison.OrdinalIgnoreCase)
                 .Replace("EUR", "", StringComparison.OrdinalIgnoreCase)
                 .Replace("GBP", "", StringComparison.OrdinalIgnoreCase)
+                .Replace("CA$", "", StringComparison.OrdinalIgnoreCase)
                 .Replace("$", "")
                 .Trim();
 
-            // Remove any remaining junk except digits, dot, minus
             cleaned = NonNumberJunkRegex.Replace(cleaned, "").Trim();
-
-            // If after cleaning we have nothing meaningful, return null
             if (string.IsNullOrWhiteSpace(cleaned)) return null;
 
             if (!decimal.TryParse(
@@ -160,35 +138,25 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
             var match = CurrencyCodeRegex.Match(upper);
             if (match.Success) return match.Value;
 
-            // Default $ to CAD (your product is Canada-first)
             if (upper.Contains("$")) return "CAD";
 
             return null;
         }
 
-        /// <summary>
-        /// Prefer explicit extracted currency (line cell, statement header).
-        /// If nothing is found, infer CAD as product default.
-        /// Returns (CurrencyCode, Evidence).
-        /// </summary>
         internal static (string CurrencyCode, string Evidence) ResolveCurrencyCode(
             string? lineCurrencyCell,
             string? statementLevelCurrency,
             string? amountCell)
         {
-            // strongest: explicit currency cell
             var c1 = ExtractCurrency(lineCurrencyCell);
             if (!string.IsNullOrWhiteSpace(c1)) return (c1!, "Extracted");
 
-            // next: statement-level currency extracted elsewhere
             var c2 = ExtractCurrency(statementLevelCurrency);
             if (!string.IsNullOrWhiteSpace(c2)) return (c2!, "Extracted");
 
-            // next: infer from amount cell symbols (e.g., "$")
             var c3 = ExtractCurrency(amountCell);
             if (!string.IsNullOrWhiteSpace(c3)) return (c3!, "Inferred");
 
-            // final fallback: Canada-first default
             return ("CAD", "Inferred");
         }
 
@@ -199,19 +167,19 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
 
             if (type.Contains("metric")) return true;
 
-            // distance / mileage
+            // Total rides must be metric (never income)
+            if (desc.Contains("total rides")) return true;
+
             if (desc.Contains("kilomet") || desc.Contains("kilometer") || desc.Contains("km") ||
                 desc.Contains("mile") || desc.Contains("mi"))
                 return true;
 
-            // trip counts / activity
             if (desc.Contains("trip") && (desc.Contains("count") || desc.Contains("trips")))
                 return true;
 
             if (desc.Contains("online hour") || desc.Contains("online time") || desc.Contains("hours online"))
                 return true;
 
-            // rate-style metrics
             if (desc.Contains("acceptance rate") || desc.Contains("cancellation rate") ||
                 desc.Contains("rating") || desc.Contains("%"))
                 return true;
@@ -219,29 +187,29 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
             return false;
         }
 
-        internal static (string? MetricKey, string? Unit) ResolveMetricKeyAndUnit(
-            string? rawType,
-            string? description)
+        /// <summary>
+        /// 
+        /// For TaxCollected/Itc rows, Lyft sometimes puts the number in the Amount column.
+        /// This normalizes it so TaxAmount is populated.
+        /// </summary>
+        internal static (decimal? MoneyAmount, decimal? TaxAmount) NormalizeTaxColumns(
+            string resolvedLineType,
+            decimal? moneyAmount,
+            decimal? taxAmount)
         {
-            var desc = (description ?? string.Empty).ToLowerInvariant();
-            var type = (rawType ?? string.Empty).ToLowerInvariant();
+            if (resolvedLineType is "TaxCollected" or "Itc")
+            {
+                // Prefer explicit TaxAmount, else fall back to MoneyAmount
+                var v = taxAmount ?? moneyAmount;
 
-            if (desc.Contains("kilomet") || desc.Contains("kilometer") || desc.Contains(" km") || desc == "km")
-                return ("RideKilometers", "km");
+                // For tax-only rows we want:
+                //   TaxAmount = v
+                //   MoneyAmount = 0 (or null)
+                return (0m, v);
+            }
 
-            if (desc.Contains(" mile") || desc.Contains(" miles") || desc.Contains(" mi") || desc == "mi")
-                return ("RideMiles", "mi");
-
-            if ((desc.Contains("trip") && desc.Contains("count")) || desc.Contains("total trips") || desc == "trips")
-                return ("Trips", "trips");
-
-            if (desc.Contains("online hour") || desc.Contains("online time") || desc.Contains("hours online"))
-                return ("OnlineHours", "hours");
-
-            if (type.Contains("metric"))
-                return ("Metric", null);
-
-            return (null, null);
+            // Monetary rows: leave as-is
+            return (moneyAmount, taxAmount);
         }
 
         internal static string ResolveLineType(
@@ -263,7 +231,7 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
                 return "Itc";
 
             if ((desc.Contains("gst") || desc.Contains("hst")) &&
-                (desc.Contains("collected") || desc.Contains("charged") || type.Contains("tax")))
+                (desc.Contains("received") || desc.Contains("collected") || desc.Contains("charged") || type.Contains("tax")))
                 return "TaxCollected";
 
             if (desc.Contains("fee") ||
@@ -279,7 +247,6 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
 
             if (desc.Contains("gross") ||
                 desc.Contains("fare") ||
-                desc.Contains("trip") ||
                 desc.Contains("bonus") ||
                 desc.Contains("promotion") ||
                 desc.Contains("tip") ||

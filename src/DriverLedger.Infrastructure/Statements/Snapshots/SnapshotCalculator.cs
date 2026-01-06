@@ -30,7 +30,9 @@ namespace DriverLedger.Infrastructure.Statements.Snapshots
                 ["tenantId"] = tenantId,
                 ["correlationId"] = correlationId,
                 ["messageId"] = envelope.MessageId,
-                ["ledgerEntryId"] = payload.LedgerEntryId
+                ["ledgerEntryId"] = payload.LedgerEntryId,
+                ["sourceType"] = payload.SourceType,
+                ["sourceId"] = payload.SourceId
             });
 
             if (!DateOnly.TryParse(payload.EntryDate, out var entryDate))
@@ -39,19 +41,57 @@ namespace DriverLedger.Infrastructure.Statements.Snapshots
                 return;
             }
 
-            // Monthly (Uber statements + general reporting)
-            var monthlyKey = $"{entryDate.Year:D4}-{entryDate.Month:D2}";
-            await ComputeAndUpsertAsync(tenantId, correlationId, periodType: "Monthly", periodKey: monthlyKey, ct);
+            // Receipts affect YTD only
+            if (string.Equals(payload.SourceType, "Receipt", StringComparison.OrdinalIgnoreCase))
+            {
+                var ytdKey = $"{entryDate.Year:D4}";
+                await ComputeAndUpsertAsync(tenantId, correlationId, periodType: "YTD", periodKey: ytdKey, ct);
+                return;
+            }
 
-            // Quarterly (Lyft statements + CRA GST/HST filing cadence for many drivers)
-            var quarter = ((entryDate.Month - 1) / 3) + 1; // 1..4
-            var quarterlyKey = $"{entryDate.Year:D4}-Q{quarter}";
-            await ComputeAndUpsertAsync(tenantId, correlationId, periodType: "Quarterly", periodKey: quarterlyKey, ct);
+            // Statements: decide which bucket they affect based on the Statement record
+            if (string.Equals(payload.SourceType, "Statement", StringComparison.OrdinalIgnoreCase)
+                && Guid.TryParse(payload.SourceId, out var statementId))
+            {
+                var st = await db.Statements
+                    .AsNoTracking()
+                    .Where(s => s.TenantId == tenantId && s.Id == statementId)
+                    .Select(s => new { s.PeriodType, s.PeriodKey, s.PeriodStart })
+                    .SingleOrDefaultAsync(ct);
 
-            // Year-to-date
-            var ytdKey = $"{entryDate.Year:D4}";
-            await ComputeAndUpsertAsync(tenantId, correlationId, periodType: "YTD", periodKey: ytdKey, ct);
+                if (st is null)
+                {
+                    logger.LogWarning("Statement not found for SourceId={SourceId}", payload.SourceId);
+                    var ytdFallback = $"{entryDate.Year:D4}";
+                    await ComputeAndUpsertAsync(tenantId, correlationId, "YTD", ytdFallback, ct);
+                    return;
+                }
+
+                // Always update YTD for statement postings too
+                var ytdKey = $"{st.PeriodStart.Year:D4}";
+                await ComputeAndUpsertAsync(tenantId, correlationId, periodType: "YTD", periodKey: ytdKey, ct);
+
+                if (string.Equals(st.PeriodType, "Monthly", StringComparison.OrdinalIgnoreCase))
+                {
+                    await ComputeAndUpsertAsync(tenantId, correlationId, periodType: "Monthly", periodKey: st.PeriodKey, ct);
+                    return;
+                }
+
+                if (string.Equals(st.PeriodType, "Quarterly", StringComparison.OrdinalIgnoreCase))
+                {
+                    await ComputeAndUpsertAsync(tenantId, correlationId, periodType: "Quarterly", periodKey: st.PeriodKey, ct);
+                    return;
+                }
+
+                // YTD/Yearly statement => YTD already computed
+                return;
+            }
+
+            // Unknown source => safest: YTD only
+            var ytd = $"{entryDate.Year:D4}";
+            await ComputeAndUpsertAsync(tenantId, correlationId, periodType: "YTD", periodKey: ytd, ct);
         }
+
 
         private async Task ComputeAndUpsertAsync(Guid tenantId, string correlationId, string periodType, string periodKey, CancellationToken ct)
         {
@@ -92,7 +132,27 @@ namespace DriverLedger.Infrastructure.Statements.Snapshots
             {
                 var (start, endExclusive) = GetRange(periodType, periodKey);
 
-                // ===== 1) Pull ledger lines in the period (metrics never get posted, good) =====
+                // ======================================================
+                // Source filtering per snapshot type
+                // Monthly   -> ONLY Monthly Statements for that PeriodKey
+                // Quarterly -> ONLY Quarterly Statements for that PeriodKey
+                // YTD       -> Everything (Statements + Receipts)
+                // ======================================================
+
+                List<string>? allowedStatementSourceIds = null;
+
+                if (periodType is "Monthly" or "Quarterly")
+                {
+                    allowedStatementSourceIds = await db.Statements
+                        .AsNoTracking()
+                        .Where(s => s.TenantId == tenantId
+                                 && s.PeriodType == periodType
+                                 && s.PeriodKey == periodKey)
+                        .Select(s => s.Id.ToString()) // SourceId is Guid.ToString("D") -> ToString() matches
+                        .ToListAsync(ct);
+                }
+
+                // ===== 1) Pull ledger lines in the period =====
                 var linesQuery =
                     from e in db.LedgerEntries
                     join l in db.LedgerLines on e.Id equals l.LedgerEntryId
@@ -109,17 +169,43 @@ namespace DriverLedger.Infrastructure.Statements.Snapshots
                         l.LineType
                     };
 
+                // Apply source rules:
+                // Apply source inclusion rules:
+                // Monthly   -> ONLY Monthly statement ledger entries for that PeriodKey
+                // Quarterly -> ONLY Quarterly statement ledger entries for that PeriodKey
+                // YTD       -> receipts + statements (everything)
+                if (periodType == "Monthly" || periodType == "Quarterly")
+                {
+                    // Find statements that match this exact bucket
+                    var statementIdsForBucket = await db.Statements
+                        .AsNoTracking()
+                        .Where(s => s.TenantId == tenantId
+                                 && s.PeriodType == periodType
+                                 && s.PeriodKey == periodKey
+                                 && s.Status == "Posted") // optional but recommended
+                        .Select(s => s.Id.ToString("D"))
+                        .ToListAsync(ct);
+
+                    linesQuery = linesQuery.Where(x =>
+                        x.SourceType == "Statement" &&
+                        statementIdsForBucket.Contains(x.SourceId));
+                }
+
+                // else YTD: no filter (includes receipts + statements)
+
                 var lines = await linesQuery.ToListAsync(ct);
 
                 var revenueTotal = lines
                     .Where(x => x.LineType == "Income")
                     .Sum(x => x.Amount);
 
+                // IMPORTANT: your existing logic treats "Fee" as expenses.
+                // If you want receipt Expense lines to count as expenses in YTD,
+                // you should include LineType == "Expense" here too.
                 var expensesTotal = lines
-                    .Where(x => x.LineType == "Fee")
+                    .Where(x => x.LineType == "Fee" || x.LineType == "Expense")
                     .Sum(x => x.Amount);
 
-                // You currently post ITC/TaxCollected as tax-only lines with GstHst.
                 var itcTotal = lines
                     .Where(x => x.LineType == "Itc")
                     .Sum(x => x.GstHst);
@@ -131,10 +217,7 @@ namespace DriverLedger.Infrastructure.Statements.Snapshots
                 var netTax = taxCollectedTotal - itcTotal;
 
                 // ===== 2) EvidencePct/EstimatedPct from STATEMENT evidence, not receipts =====
-                // Only monetary statement lines (Income/Fee/Expense), ignore metric lines.
-                //
-                // Join LedgerLine -> LedgerSourceLink -> StatementLine
-                // so the evidence computation reflects extracted vs inferred currency/classification.
+                // This already excludes receipts because it joins to StatementLines via LedgerSourceLink.
                 var statementEvidence = await (
                     from e in db.LedgerEntries
                     join l in db.LedgerLines on e.Id equals l.LedgerEntryId
@@ -158,8 +241,6 @@ namespace DriverLedger.Infrastructure.Statements.Snapshots
                     string.Equals(x.CurrencyEvidence, "Extracted", StringComparison.OrdinalIgnoreCase) &&
                     string.Equals(x.ClassificationEvidence, "Extracted", StringComparison.OrdinalIgnoreCase));
 
-                // AuthorityScoreCalculator expects total lines + evidenced lines.
-                // Here total = monetary statement lines only (correct per requirement).
                 var authority = AuthorityScoreCalculator.Compute(totalMonetaryStatementLines, evidencedMonetaryStatementLines);
                 var evidencePct = authority.EvidencePct;
                 var estimatedPct = authority.EstimatedPct;
@@ -308,10 +389,9 @@ namespace DriverLedger.Infrastructure.Statements.Snapshots
 
             if (periodType == "Quarterly")
             {
-                // periodKey: YYYY-Qn (e.g., 2024-Q4)
                 var year = int.Parse(periodKey[..4]);
-                var q = int.Parse(periodKey[^1..]); // last char 1..4
-                var startMonth = (q - 1) * 3 + 1; // 1,4,7,10
+                var q = int.Parse(periodKey[^1..]);
+                var startMonth = (q - 1) * 3 + 1;
                 var start = new DateOnly(year, startMonth, 1);
                 var end = start.AddMonths(3);
                 return (start, end);

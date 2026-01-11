@@ -259,13 +259,25 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
                     // Monetary allowlist for Uber
                     var desc = (line.Description ?? string.Empty).Trim();
 
+                    static bool IsGrossUberRidesFares(string d)
+                    {
+                        if (string.IsNullOrWhiteSpace(d)) return false;
+
+                        // Covers:
+                        // - "Gross Uber rides fares"
+                        // - "Gross Uber rides fares1"
+                        // - any future minor suffix variants
+                        return d.StartsWith("Gross Uber rides fares", StringComparison.OrdinalIgnoreCase);
+                    }
+
                     var allowed =
                         string.Equals(line.LineType, "TaxCollected", StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(line.LineType, "Itc", StringComparison.OrdinalIgnoreCase) ||
                         (string.Equals(line.LineType, "Income", StringComparison.OrdinalIgnoreCase) &&
-                         string.Equals(desc, "Uber Rides Total (Gross)", StringComparison.OrdinalIgnoreCase)) ||
+                            (string.Equals(desc, "Uber Rides Total (Gross)", StringComparison.OrdinalIgnoreCase)
+                             || IsGrossUberRidesFares(desc))) ||
                         (string.Equals(line.LineType, "Fee", StringComparison.OrdinalIgnoreCase) &&
-                         string.Equals(desc, "Uber Rides Fees Total", StringComparison.OrdinalIgnoreCase));
+                            string.Equals(desc, "Uber Rides Fees Total", StringComparison.OrdinalIgnoreCase));
 
                     if (allowed)
                         kept.Add(line);

@@ -1,5 +1,5 @@
-﻿using DriverLedger.Application.Common;
-using System.Security.Claims;
+using DriverLedger.Application.Common;
+
 
 namespace DriverLedger.Api.Common.Middleware
 {

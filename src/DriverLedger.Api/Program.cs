@@ -8,11 +8,13 @@ using DriverLedger.Api.Modules.Files;
 using DriverLedger.Api.Modules.Ledger;
 using DriverLedger.Api.Modules.LiveStatement;
 using DriverLedger.Api.Modules.Receipts;
+using DriverLedger.Api.Modules.Reconciliation;
 using DriverLedger.Api.Modules.Statements;
 using DriverLedger.Application.Auditing;
 using DriverLedger.Application.Common;
 using DriverLedger.Application.Receipts;
 using DriverLedger.Application.Receipts.Extraction;
+using DriverLedger.Application.Statements.Reconciliation;
 using DriverLedger.Infrastructure.Auditing;
 using DriverLedger.Infrastructure.Common;
 using DriverLedger.Infrastructure.Files;
@@ -23,6 +25,7 @@ using DriverLedger.Infrastructure.Persistence.Interceptors;
 using DriverLedger.Infrastructure.Receipts;
 using DriverLedger.Infrastructure.Receipts.Extraction;
 using DriverLedger.Infrastructure.Statements.Extraction;
+using DriverLedger.Infrastructure.Statements.Reconciliation;
 using DriverLedger.Infrastructure.Statements.Snapshots;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics;
@@ -31,6 +34,7 @@ using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
 using System.Text;
+
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -115,6 +119,7 @@ builder.Services.AddScoped<IStatementExtractor, CsvStatementExtractor>();
 builder.Services.AddScoped<IStatementMetadataExtractor, AzureDocumentIntelligenceStatementMetadataExtractor>();
 builder.Services.AddScoped<StatementExtractionHandler>();
 builder.Services.AddScoped<StatementToLedgerPostingHandler>();
+builder.Services.AddScoped<IStatementReconciliationService, UberStatementReconciliationService>();
 
 // -----------------------------
 // Azure clients
@@ -257,6 +262,7 @@ ApiReceipts.MapReceiptEndpoints(app);
 ApiLiveStatement.MapLiveStatement(app);
 ApiLedger.MapLedger(app);
 ApiStatements.MapStatementEndpoints(app);
+ApiReconciliation.MapReconciliationEndpoints(app);
 
 app.Run();
 

@@ -10,6 +10,21 @@ using System.Text.Json;
 
 namespace DriverLedger.Infrastructure.Statements.Snapshots
 {
+    /// <summary>
+    /// Computes and upserts LedgerSnapshots (Monthly / Quarterly / YTD) whenever ledger entries are posted.
+    ///
+    /// Snapshot rules:
+    /// - Monthly   -> ONLY Posted Monthly Statements for that PeriodKey
+    /// - Quarterly -> ONLY Posted Quarterly Statements for that PeriodKey
+    /// - YTD       -> Everything (Statements + Receipts)
+    ///
+    /// Revenue rules (Uber):
+    /// - Monthly/Quarterly: Prefer statement-evidenced "Gross Uber rides fares" (aka "...fares1") as revenue anchor.
+    ///   Fallback to sum(Income) if the anchor cannot be found.
+    /// - YTD: Use the SAME anchor rule for Uber Monthly statements across the year to avoid double counting
+    ///   (e.g., "Uber Rides Total (Gross)" + "Gross Uber rides fares1").
+    ///   Non-Uber statement income and receipt income are summed normally.
+    /// </summary>
     public sealed class SnapshotCalculator(
        DriverLedgerDbContext db,
        ITenantProvider tenantProvider,
@@ -92,7 +107,6 @@ namespace DriverLedger.Infrastructure.Statements.Snapshots
             await ComputeAndUpsertAsync(tenantId, correlationId, periodType: "YTD", periodKey: ytd, ct);
         }
 
-
         private async Task ComputeAndUpsertAsync(Guid tenantId, string correlationId, string periodType, string periodKey, CancellationToken ct)
         {
             var dedupeKey = $"snapshot.compute:{periodType}:{periodKey}";
@@ -134,25 +148,26 @@ namespace DriverLedger.Infrastructure.Statements.Snapshots
 
                 // ======================================================
                 // Source filtering per snapshot type
-                // Monthly   -> ONLY Monthly Statements for that PeriodKey
-                // Quarterly -> ONLY Quarterly Statements for that PeriodKey
+                // Monthly   -> ONLY Posted Monthly Statements for that PeriodKey
+                // Quarterly -> ONLY Posted Quarterly Statements for that PeriodKey
                 // YTD       -> Everything (Statements + Receipts)
                 // ======================================================
 
-                List<string>? allowedStatementSourceIds = null;
+                List<string>? statementIdsForBucket = null;
 
                 if (periodType is "Monthly" or "Quarterly")
                 {
-                    allowedStatementSourceIds = await db.Statements
+                    statementIdsForBucket = await db.Statements
                         .AsNoTracking()
                         .Where(s => s.TenantId == tenantId
                                  && s.PeriodType == periodType
-                                 && s.PeriodKey == periodKey)
-                        .Select(s => s.Id.ToString()) // SourceId is Guid.ToString("D") -> ToString() matches
+                                 && s.PeriodKey == periodKey
+                                 && s.Status == "Posted")
+                        .Select(s => s.Id.ToString("D"))
                         .ToListAsync(ct);
                 }
 
-                // ===== 1) Pull ledger lines in the period =====
+                // ===== 1) Pull ledger lines in the period (for totals other than revenue) =====
                 var linesQuery =
                     from e in db.LedgerEntries
                     join l in db.LedgerLines on e.Id equals l.LedgerEntryId
@@ -160,48 +175,50 @@ namespace DriverLedger.Infrastructure.Statements.Snapshots
                     where e.EntryDate >= start && e.EntryDate < endExclusive
                     select new
                     {
-                        LedgerEntryId = e.Id,
                         e.SourceType,
                         e.SourceId,
-                        LedgerLineId = l.Id,
                         l.Amount,
                         l.GstHst,
                         l.LineType
                     };
 
-                // Apply source rules:
-                // Apply source inclusion rules:
-                // Monthly   -> ONLY Monthly statement ledger entries for that PeriodKey
-                // Quarterly -> ONLY Quarterly statement ledger entries for that PeriodKey
-                // YTD       -> receipts + statements (everything)
-                if (periodType == "Monthly" || periodType == "Quarterly")
+                // Monthly/Quarterly: limit to statements in bucket.
+                if (periodType is "Monthly" or "Quarterly")
                 {
-                    // Find statements that match this exact bucket
-                    var statementIdsForBucket = await db.Statements
-                        .AsNoTracking()
-                        .Where(s => s.TenantId == tenantId
-                                 && s.PeriodType == periodType
-                                 && s.PeriodKey == periodKey
-                                 && s.Status == "Posted") // optional but recommended
-                        .Select(s => s.Id.ToString("D"))
-                        .ToListAsync(ct);
-
-                    linesQuery = linesQuery.Where(x =>
-                        x.SourceType == "Statement" &&
-                        statementIdsForBucket.Contains(x.SourceId));
+                    if (statementIdsForBucket is { Count: > 0 })
+                    {
+                        linesQuery = linesQuery.Where(x =>
+                            x.SourceType == "Statement" &&
+                            statementIdsForBucket.Contains(x.SourceId));
+                    }
+                    else
+                    {
+                        linesQuery = linesQuery.Where(_ => false);
+                    }
                 }
-
-                // else YTD: no filter (includes receipts + statements)
 
                 var lines = await linesQuery.ToListAsync(ct);
 
-                var revenueTotal = lines
-                    .Where(x => x.LineType == "Income")
-                    .Sum(x => x.Amount);
+                // ======================================================
+                // Revenue calculation
+                // ======================================================
+                decimal revenueTotal;
 
-                // IMPORTANT: your existing logic treats "Fee" as expenses.
-                // If you want receipt Expense lines to count as expenses in YTD,
-                // you should include LineType == "Expense" here too.
+                if (periodType is "Monthly" or "Quarterly")
+                {
+                    revenueTotal = await ComputeUberAnchoredRevenueForStatementBucketAsync(
+                        tenantId, start, endExclusive, statementIdsForBucket, lines, ct);
+                }
+                else if (periodType == "YTD")
+                {
+                    revenueTotal = await ComputeUberAnchoredRevenueForYtdAsync(
+                        tenantId, start, endExclusive, lines, ct);
+                }
+                else
+                {
+                    revenueTotal = lines.Where(x => x.LineType == "Income").Sum(x => x.Amount);
+                }
+
                 var expensesTotal = lines
                     .Where(x => x.LineType == "Fee" || x.LineType == "Expense")
                     .Sum(x => x.Amount);
@@ -217,8 +234,7 @@ namespace DriverLedger.Infrastructure.Statements.Snapshots
                 var netTax = taxCollectedTotal - itcTotal;
 
                 // ===== 2) EvidencePct/EstimatedPct from STATEMENT evidence, not receipts =====
-                // This already excludes receipts because it joins to StatementLines via LedgerSourceLink.
-                var statementEvidence = await (
+                var statementEvidenceQuery =
                     from e in db.LedgerEntries
                     join l in db.LedgerLines on e.Id equals l.LedgerEntryId
                     join link in db.Set<DriverLedger.Domain.Ledger.LedgerSourceLink>() on l.Id equals link.LedgerLineId
@@ -230,10 +246,23 @@ namespace DriverLedger.Infrastructure.Statements.Snapshots
                     where sl.LineType == "Income" || sl.LineType == "Fee" || sl.LineType == "Expense"
                     select new
                     {
+                        e.SourceType,
+                        e.SourceId,
                         sl.CurrencyEvidence,
                         sl.ClassificationEvidence
-                    }
-                ).ToListAsync(ct);
+                    };
+
+                if (periodType is "Monthly" or "Quarterly"
+                    && statementIdsForBucket is { Count: > 0 })
+                {
+                    statementEvidenceQuery = statementEvidenceQuery.Where(x =>
+                        x.SourceType == "Statement" &&
+                        statementIdsForBucket.Contains(x.SourceId));
+                }
+
+                var statementEvidence = await statementEvidenceQuery
+                    .Select(x => new { x.CurrencyEvidence, x.ClassificationEvidence })
+                    .ToListAsync(ct);
 
                 var totalMonetaryStatementLines = statementEvidence.Count;
 
@@ -351,6 +380,120 @@ namespace DriverLedger.Infrastructure.Statements.Snapshots
                 await db.SaveChangesAsync(ct);
                 throw;
             }
+        }
+
+        /// <summary>
+        /// Monthly/Quarterly statement bucket revenue:
+        /// Prefer statement-evidenced "Gross Uber rides fares..." (fares/fares1) for Uber.
+        /// Fallback to sum(Income) if the anchor isn't present.
+        /// </summary>
+        private async Task<decimal> ComputeUberAnchoredRevenueForStatementBucketAsync(
+            Guid tenantId,
+            DateOnly start,
+            DateOnly endExclusive,
+            List<string>? statementIdsForBucket,
+            IReadOnlyList<dynamic> bucketLines,
+            CancellationToken ct)
+        {
+            if (statementIdsForBucket is not { Count: > 0 })
+                return 0m;
+
+            var grossUberRidesFares = await (
+                from e in db.LedgerEntries
+                join l in db.LedgerLines on e.Id equals l.LedgerEntryId
+                join link in db.Set<DriverLedger.Domain.Ledger.LedgerSourceLink>() on l.Id equals link.LedgerLineId
+                join sl in db.StatementLines on link.StatementLineId equals sl.Id
+                where e.TenantId == tenantId
+                where e.EntryDate >= start && e.EntryDate < endExclusive
+                where e.SourceType == "Statement"
+                where statementIdsForBucket.Contains(e.SourceId)
+                where l.LineType == "Income"
+                where sl.Description != null
+                where EF.Functions.Like(sl.Description, "%Gross Uber rides fares%")
+                select l.Amount
+            ).SumAsync(ct);
+
+            if (grossUberRidesFares > 0m)
+                return grossUberRidesFares;
+
+            // Fallback: sum Income lines in the bucket.
+            decimal fallback = 0m;
+            foreach (var x in bucketLines)
+            {
+                if (x.LineType == "Income")
+                    fallback += (decimal)x.Amount;
+            }
+            return fallback;
+        }
+
+        /// <summary>
+        /// YTD revenue:
+        /// - Receipt income is included as-is.
+        /// - Non-Uber income is included as-is.
+        /// - Uber Monthly statements are included ONLY via the "Gross Uber rides fares..." anchor to prevent double counting.
+        /// </summary>
+        private async Task<decimal> ComputeUberAnchoredRevenueForYtdAsync(
+            Guid tenantId,
+            DateOnly start,
+            DateOnly endExclusive,
+            IReadOnlyList<dynamic> ytdLines,
+            CancellationToken ct)
+        {
+            var uberMonthlyStatementIdsInYear = await db.Statements
+                .AsNoTracking()
+                .Where(s => s.TenantId == tenantId
+                         && s.Provider == "Uber"
+                         && s.PeriodType == "Monthly"
+                         && s.Status == "Posted"
+                         && s.PeriodStart >= start && s.PeriodStart < endExclusive)
+                .Select(s => s.Id.ToString("D"))
+                .ToListAsync(ct);
+
+            decimal receiptIncome = 0m;
+            decimal nonUberMonthlyStatementIncome = 0m;
+
+            foreach (var x in ytdLines)
+            {
+                if (x.LineType != "Income")
+                    continue;
+
+                if (x.SourceType == "Receipt")
+                {
+                    receiptIncome += (decimal)x.Amount;
+                    continue;
+                }
+
+                // Exclude raw Income lines from Uber monthly statements (they often include both Total and Gross fares).
+                if (x.SourceType == "Statement"
+                    && uberMonthlyStatementIdsInYear.Contains((string)x.SourceId))
+                {
+                    continue;
+                }
+
+                nonUberMonthlyStatementIncome += (decimal)x.Amount;
+            }
+
+            decimal uberMonthlyAnchoredRevenue = 0m;
+
+            if (uberMonthlyStatementIdsInYear.Count > 0)
+            {
+                uberMonthlyAnchoredRevenue = await (
+                    from e in db.LedgerEntries
+                    join l in db.LedgerLines on e.Id equals l.LedgerEntryId
+                    join link in db.Set<DriverLedger.Domain.Ledger.LedgerSourceLink>() on l.Id equals link.LedgerLineId
+                    join sl in db.StatementLines on link.StatementLineId equals sl.Id
+                    where e.TenantId == tenantId
+                    where e.EntryDate >= start && e.EntryDate < endExclusive
+                    where e.SourceType == "Statement"
+                    where uberMonthlyStatementIdsInYear.Contains(e.SourceId)
+                    where l.LineType == "Income"
+                    where sl.Description != null
+                    where EF.Functions.Like(sl.Description, "%Gross Uber rides fares%")
+                    select l.Amount
+                ).SumAsync(ct);
+            }
+
+            return receiptIncome + nonUberMonthlyStatementIncome + uberMonthlyAnchoredRevenue;
         }
 
         private static void UpsertDetail(LedgerSnapshot snapshot, string metricKey, decimal value, decimal evidencePct, decimal estimatedPct)

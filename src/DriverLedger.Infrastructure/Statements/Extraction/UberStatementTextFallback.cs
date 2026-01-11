@@ -17,16 +17,28 @@ internal static class UberStatementTextFallback
 
         var results = new List<StatementLineNormalized>();
 
+        // -----------------------------
         // Section headers
+        // -----------------------------
         const string ridesGrossHeader = @"\bUBER\s+RIDES\s*-\s*GROSS\s+FARES\s+BREAKDOWN\b";
         const string ridesFeesHeader = @"\bUBER\s+RIDES\s*-\s*FEES\s+BREAKDOWN\b";
         const string eatsGrossHeader = @"\bUBER\s+EATS\s*-\s*GROSS\s+FARES\s+BREAKDOWN\b";
         const string otherDedHeader = @"\bOTHER\s+POTENTIAL\s+DEDUCTIONS\b";
 
+        // -----------------------------
+        // Label patterns inside sections (tables)
+        // -----------------------------
+        // Matches:
+        // - "Gross Uber rides fares"
+        // - "Gross Uber rides fares1"
+        // - minor suffix variants where the base phrase is preserved
+        const string grossUberRidesFaresLabel = @"\bGross\s+Uber\s+rides\s+fares\b";
+
         // Hard ignore “GST/HST number ... RT0001” type lines
         static bool IsRegistrationNoise(string s)
         {
             if (string.IsNullOrWhiteSpace(s)) return false;
+
             // Example: "Your GST/HST Number 789675428RT0001"
             return Regex.IsMatch(s, @"\bRT\d{4}\b", RegexOptions.IgnoreCase)
                    && Regex.IsMatch(s, @"\bGST\s*/\s*HST\b|\bGST\b|\bHST\b", RegexOptions.IgnoreCase);
@@ -37,6 +49,7 @@ internal static class UberStatementTextFallback
             for (var i = 0; i < src.Length; i++)
                 if (Regex.IsMatch(src[i], headerPattern, RegexOptions.IgnoreCase))
                     return i;
+
             return -1;
         }
 
@@ -96,7 +109,7 @@ internal static class UberStatementTextFallback
                 var amt = StatementExtractionParsing.ParseAmount(line);
                 if (amt.HasValue) return amt.Value;
 
-                // lookahead
+                // lookahead (layout may be label line followed by amount on next line)
                 for (var j = 1; j <= lookAhead && (i + j) < end; j++)
                 {
                     var next = src[i + j];
@@ -112,7 +125,8 @@ internal static class UberStatementTextFallback
             return null;
         }
 
-        // For totals: pick the FIRST "Total" that has a real money amount, but still scoped
+        // For totals: prefer the LAST "Total" that has a real money amount, scoped to the section.
+        // This reduces the chance of accidentally selecting an intermediate subtotal from a table.
         static decimal? FindSectionTotal(
             IReadOnlyList<string> src,
             Func<string, bool> isNoise,
@@ -121,7 +135,7 @@ internal static class UberStatementTextFallback
         {
             end = Math.Min(end, src.Count);
 
-            for (var i = Math.Max(0, start); i < end; i++)
+            for (var i = Math.Min(end - 1, src.Count - 1); i >= Math.Max(0, start); i--)
             {
                 var line = src[i];
                 if (isNoise(line)) continue;
@@ -148,7 +162,12 @@ internal static class UberStatementTextFallback
         // -----------------------------
         if (hasOtherDed)
         {
-            var onlineKm = FindAmountNearLabel(lines, IsRegistrationNoise, @"\bOnline\s+Mileage\b", otherDed.Start, otherDed.End);
+            var onlineKm = FindAmountNearLabel(
+                lines,
+                IsRegistrationNoise,
+                @"\bOnline\s+Mileage\b",
+                otherDed.Start, otherDed.End);
+
             results.Add(new StatementLineNormalized(
                 LineDate: DateOnly.MinValue,
                 LineType: "Metric",
@@ -187,7 +206,7 @@ internal static class UberStatementTextFallback
         }
 
         // -----------------------------
-        // 2) Uber Rides Gross: tax collected + total
+        // 2) Uber Rides Gross: preferred revenue anchor + tax collected + gross total
         // -----------------------------
         if (hasRidesGross)
         {
@@ -212,6 +231,33 @@ internal static class UberStatementTextFallback
                 TaxAmount: Math.Abs(taxCollected ?? 0m)
             ));
 
+            // Preferred revenue anchor:
+            // "Gross Uber rides fares" (some PDFs show "Gross Uber rides fares1")
+            var grossUberRidesFares = FindAmountNearLabel(
+                lines,
+                IsRegistrationNoise,
+                grossUberRidesFaresLabel,
+                ridesGross.Start, ridesGross.End);
+
+            if (grossUberRidesFares.HasValue)
+            {
+                results.Add(new StatementLineNormalized(
+                    LineDate: DateOnly.MinValue,
+                    LineType: "Income",
+                    Description: "Gross Uber rides fares",
+                    CurrencyCode: "CAD",
+                    CurrencyEvidence: "Extracted",
+                    ClassificationEvidence: "Extracted",
+                    IsMetric: false,
+                    MetricKey: null,
+                    MetricValue: null,
+                    Unit: null,
+                    MoneyAmount: Math.Abs(grossUberRidesFares.Value),
+                    TaxAmount: null
+                ));
+            }
+
+            // Keep the section "Total" as a separate line for reconciliation/variance analysis.
             var grossTotal = FindSectionTotal(lines, IsRegistrationNoise, ridesGross.Start, ridesGross.End);
 
             results.Add(new StatementLineNormalized(

@@ -110,6 +110,7 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
                 .Replace("$", "")
                 .Trim();
 
+            cleaned = cleaned.Replace(" ", "");
             cleaned = NonNumberJunkRegex.Replace(cleaned, "").Trim();
             if (string.IsNullOrWhiteSpace(cleaned)) return null;
 
@@ -130,18 +131,39 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
             if (string.IsNullOrWhiteSpace(value)) return null;
 
             var upper = value.ToUpperInvariant();
+
+            // Strong signals first (Uber yearly uses CA$ / C$)
+            if (upper.Contains("CA$") || upper.Contains("C$")) return "CAD";
+            if (upper.Contains("US$")) return "USD";
+
+            // Explicit ISO codes
             if (upper.Contains("CAD")) return "CAD";
             if (upper.Contains("USD")) return "USD";
             if (upper.Contains("EUR")) return "EUR";
             if (upper.Contains("GBP")) return "GBP";
 
+            // Avoid obvious false positives (Uber yearly header contains "NOT AN OFFICIAL ...")
+            // Also block common non-currency 3-letter tokens.
             var match = CurrencyCodeRegex.Match(upper);
-            if (match.Success) return match.Value;
+            if (match.Success)
+            {
+                var code = match.Value;
 
+                // Tight allowlist (expand later if needed)
+                if (code is "CAD" or "USD" or "EUR" or "GBP")
+                    return code;
+
+                // Reject junk tokens that commonly appear in docs
+                if (code is "NOT" or "AND" or "THE" or "TAX" or "FOR" or "YOU")
+                    return null;
+            }
+
+            // "$" fallback (keep but safe)
             if (upper.Contains("$")) return "CAD";
 
             return null;
         }
+
 
         internal static (string CurrencyCode, string Evidence) ResolveCurrencyCode(
             string? lineCurrencyCell,

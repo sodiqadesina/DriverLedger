@@ -349,6 +349,59 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
                     .FirstOrDefault(code => !string.IsNullOrWhiteSpace(code));
             }
 
+            // Fallback: scan page text lines (needed for Uber yearly summaries)
+            if (totalAmount is null || taxAmount is null || currency is null)
+            {
+                var lines = result.Pages
+                    .OrderBy(p => p.PageNumber)
+                    .SelectMany(p => p.Lines)
+                    .Select(l => l.Content?.Trim())
+                    .Where(s => !string.IsNullOrWhiteSpace(s))
+                    .Take(300)
+                    .ToList();
+
+                if (totalAmount is null)
+                {
+                    foreach (var line in lines)
+                    {
+                        if (line is null) continue;
+                        if (TotalAmountHints.Any(h => line.Contains(h, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            var amt = StatementExtractionParsing.ParseAmount(line);
+                            if (amt.HasValue)
+                            {
+                                totalAmount = amt;
+                                currency ??= StatementExtractionParsing.ExtractCurrency(line);
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (taxAmount is null)
+                {
+                    foreach (var line in lines)
+                    {
+                        if (line is null) continue;
+                        if (TaxAmountHints.Any(h => line.Contains(h, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            var amt = StatementExtractionParsing.ParseAmount(line);
+                            if (amt.HasValue)
+                            {
+                                taxAmount = amt;
+                                currency ??= StatementExtractionParsing.ExtractCurrency(line);
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                currency ??= lines
+                    .Select(StatementExtractionParsing.ExtractCurrency)
+                    .FirstOrDefault(c => !string.IsNullOrWhiteSpace(c));
+            }
+
+
             return (totalAmount, taxAmount, currency);
         }
 
@@ -384,7 +437,7 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
 
             if (string.IsNullOrWhiteSpace(text)) return false;
 
-            // ✅ Uber fix: detects embedded "2024/11" inside a larger sentence.
+            //  Uber fix: detects embedded "2024/11" inside a larger sentence.
             if (TryParseMonthYear(text, out var monthStart, out var monthEnd))
             {
                 start = monthStart;

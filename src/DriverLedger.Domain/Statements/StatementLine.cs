@@ -16,10 +16,10 @@ namespace DriverLedger.Domain.Statements
 
         // ===== Currency normalization =====
         public string? CurrencyCode { get; set; } // ISO: CAD, USD, ...
-        public string CurrencyEvidence { get; set; } = "Extracted"; // Extracted | Inferred
+        public string CurrencyEvidence { get; set; } = "Inferred"; // Extracted | Inferred
 
         // ===== Classification evidence =====
-        public string ClassificationEvidence { get; set; } = "Extracted"; // Extracted | Inferred
+        public string ClassificationEvidence { get; set; } = "Inferred"; // Extracted | Inferred
 
         // ===== Metric support =====
         public bool IsMetric { get; set; }

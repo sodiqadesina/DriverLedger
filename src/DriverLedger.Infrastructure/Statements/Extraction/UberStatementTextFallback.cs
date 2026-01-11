@@ -74,7 +74,7 @@ internal static class UberStatementTextFallback
             return (start, end);
         }
 
-        // IMPORTANT: if Uber Eats header exists, we ignore everything after it
+        // IMPORTANT: if Uber Eats header exists, we ignore everything after it for now.
         var eatsIdx = FindHeaderIndex(lines, eatsGrossHeader);
         var hardEndExclusive = eatsIdx >= 0 ? eatsIdx : lines.Length;
 

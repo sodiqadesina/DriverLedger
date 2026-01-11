@@ -14,6 +14,17 @@ using System.Text.RegularExpressions;
 
 namespace DriverLedger.Infrastructure.Statements.Extraction
 {
+    /// <summary>
+    /// Handles incoming statement files, runs the correct extractor, normalizes/collapses line output,
+    /// applies provider-specific pruning rules, and persists the Statement + StatementLines.
+    ///
+    /// Notes on evidence fields:
+    /// - CurrencyEvidence/ClassificationEvidence are end-to-end signals. Do not silently downgrade them.
+    /// - If a line inherits CurrencyCode from the statement-level currency, it should inherit the
+    ///   statement-level CurrencyEvidence as well.
+    /// - Provider-specific canonical lines (e.g., Uber gross fares anchors) may be upgraded to Extracted
+    ///   when the classification is deterministically known by business rules.
+    /// </summary>
     public sealed class StatementExtractionHandler(
         DriverLedgerDbContext db,
         ITenantProvider tenantProvider,
@@ -185,6 +196,7 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
                     Currency: t.Orig.CurrencyCode))
                 .Select(g =>
                 {
+                    // Choose the "best evidenced" representative for the group.
                     var best = g
                         .OrderByDescending(x => string.Equals(x.Orig.ClassificationEvidence, "Extracted", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
                         .ThenByDescending(x => string.Equals(x.Orig.CurrencyEvidence, "Extracted", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
@@ -241,6 +253,44 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
             {
                 var kept = new List<StatementLineNormalized>(capacity: collapsed.Count);
 
+                static bool IsGrossUberRidesFares(string d)
+                {
+                    if (string.IsNullOrWhiteSpace(d)) return false;
+
+                    // Covers:
+                    // - "Gross Uber rides fares"
+                    // - "Gross Uber rides fares1"
+                    // - any future minor suffix variants
+                    return d.StartsWith("Gross Uber rides fares", StringComparison.OrdinalIgnoreCase);
+                }
+
+                static StatementLineNormalized UpgradeEvidenceForGrossFares(StatementLineNormalized l)
+                {
+                    // Business rule: when we deterministically match the canonical Uber gross fares label,
+                    // we treat classification/currency evidence as Extracted (do not downgrade if already extracted).
+                    var d = (l.Description ?? string.Empty).Trim();
+
+                    if (!string.Equals(l.LineType, "Income", StringComparison.OrdinalIgnoreCase))
+                        return l;
+
+                    if (!IsGrossUberRidesFares(d))
+                        return l;
+
+                    var curEv = string.Equals(l.CurrencyEvidence, "Extracted", StringComparison.OrdinalIgnoreCase)
+                        ? l.CurrencyEvidence
+                        : "Extracted";
+
+                    var classEv = string.Equals(l.ClassificationEvidence, "Extracted", StringComparison.OrdinalIgnoreCase)
+                        ? l.ClassificationEvidence
+                        : "Extracted";
+
+                    return l with
+                    {
+                        CurrencyEvidence = curEv,
+                        ClassificationEvidence = classEv
+                    };
+                }
+
                 foreach (var line in collapsed)
                 {
                     // Drop GST registration noise always
@@ -259,17 +309,6 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
                     // Monetary allowlist for Uber
                     var desc = (line.Description ?? string.Empty).Trim();
 
-                    static bool IsGrossUberRidesFares(string d)
-                    {
-                        if (string.IsNullOrWhiteSpace(d)) return false;
-
-                        // Covers:
-                        // - "Gross Uber rides fares"
-                        // - "Gross Uber rides fares1"
-                        // - any future minor suffix variants
-                        return d.StartsWith("Gross Uber rides fares", StringComparison.OrdinalIgnoreCase);
-                    }
-
                     var allowed =
                         string.Equals(line.LineType, "TaxCollected", StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(line.LineType, "Itc", StringComparison.OrdinalIgnoreCase) ||
@@ -279,8 +318,11 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
                         (string.Equals(line.LineType, "Fee", StringComparison.OrdinalIgnoreCase) &&
                             string.Equals(desc, "Uber Rides Fees Total", StringComparison.OrdinalIgnoreCase));
 
-                    if (allowed)
-                        kept.Add(line);
+                    if (!allowed)
+                        continue;
+
+                    // Ensure gross fares anchors do not get persisted as "Inferred/Inferred" when we can deterministically match them.
+                    kept.Add(UpgradeEvidenceForGrossFares(line));
                 }
 
                 // IMPORTANT: for Uber we want these lines to exist even if they were missing (so snapshots stay stable).
@@ -548,8 +590,13 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
                 if (createdLines.Any(e => IsEquivalent(e, n)))
                     continue;
 
+                // Currency inheritance:
+                // - If line provides its own CurrencyCode, use it and keep its evidence.
+                // - If line does not provide CurrencyCode, inherit statement currency AND statement currency evidence.
                 var lineCurrency = n.CurrencyCode ?? statement.CurrencyCode;
-                var lineCurrencyEvidence = n.CurrencyCode is null ? "Inferred" : n.CurrencyEvidence;
+                var lineCurrencyEvidence = n.CurrencyCode is null
+                    ? statement.CurrencyEvidence
+                    : n.CurrencyEvidence;
 
                 decimal? moneyAmount = n.MoneyAmount;
                 decimal? taxAmount = n.TaxAmount;
@@ -605,8 +652,38 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
             var feeTotal = createdLines.Where(x => x.LineType == "Fee" || x.LineType == "Expense").Sum(x => x.MoneyAmount ?? 0m);
             var taxTotal = createdLines.Where(x => !x.IsMetric).Sum(x => x.TaxAmount ?? 0m);
 
-            statement.StatementTotalAmount = incomeTotal - feeTotal;
+            // ==========================================================
+            // Statement-level totals
+            // ==========================================================
+            // StatementTotalAmount is a provider-facing "statement total" number,
+            // not the same as snapshot revenue. For Uber, we keep this aligned with
+            // the historical "Total" line users expect ("Uber Rides Total (Gross)").
+            // Snapshots may use a different revenue anchor ("Gross Uber rides fares...").
+            // ==========================================================
+
             statement.TaxAmount = taxTotal;
+
+            if (string.Equals(msg.Provider, "Uber", StringComparison.OrdinalIgnoreCase))
+            {
+                // Prefer the old statement "Total" line (previous revenue behavior).
+                // This is what users expect to see as the statement's total figure.
+                var uberTotalGross = createdLines
+                    .Where(x => x.LineType == "Income")
+                    .Where(x => string.Equals((x.Description ?? string.Empty).Trim(), "Uber Rides Total (Gross)", StringComparison.OrdinalIgnoreCase))
+                    .Select(x => x.MoneyAmount ?? 0m)
+                    .FirstOrDefault();
+
+                // Fallback: if missing, fall back to legacy net calculation.
+                statement.StatementTotalAmount = uberTotalGross > 0m
+                    ? uberTotalGross
+                    : (incomeTotal - feeTotal);
+            }
+            else
+            {
+                // Default behavior for other providers: net statement total (income - fees/expenses).
+                statement.StatementTotalAmount = incomeTotal - feeTotal;
+            }
+
 
             db.AuditEvents.Add(new AuditEvent
             {

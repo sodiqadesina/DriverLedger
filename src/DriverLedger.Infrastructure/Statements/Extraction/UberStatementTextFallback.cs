@@ -76,11 +76,14 @@ internal static class UberStatementTextFallback
 
         // IMPORTANT: if Uber Eats header exists, we ignore everything after it for now.
         var eatsIdx = FindHeaderIndex(lines, eatsGrossHeader);
-        var hardEndExclusive = eatsIdx >= 0 ? eatsIdx : lines.Length;
+        var ridesHardEndExclusive = eatsIdx >= 0 ? eatsIdx : lines.Length;
 
-        var ridesGross = FindSectionRange(lines, ridesGrossHeader, hardEndExclusive);
-        var ridesFees = FindSectionRange(lines, ridesFeesHeader, hardEndExclusive);
-        var otherDed = FindSectionRange(lines, otherDedHeader, hardEndExclusive);
+        var ridesGross = FindSectionRange(lines, ridesGrossHeader, ridesHardEndExclusive);
+        var ridesFees = FindSectionRange(lines, ridesFeesHeader, ridesHardEndExclusive);
+
+        // For OTHER POTENTIAL DEDUCTIONS, do NOT stop at Uber Eats.
+        // Annual PDFs often place "OTHER POTENTIAL DEDUCTIONS" after the Uber Eats section.
+        var otherDed = FindSectionRange(lines, otherDedHeader, lines.Length);
 
         var hasRidesGross = ridesGross.Start >= 0;
         var hasRidesFees = ridesFees.Start >= 0;

@@ -14,7 +14,9 @@ namespace DriverLedger.Api.Modules.Statements
     {
         public static IEndpointRouteBuilder MapStatementEndpoints(this IEndpointRouteBuilder app)
         {
-            var group = app.MapGroup("/api/statements").WithTags("Statements").RequireAuthorization("RequireDriver");
+            var group = app.MapGroup("/api/statements")
+                .WithTags("Statements")
+                .RequireAuthorization("RequireDriver");
 
             // Upload a statement file + metadata
             group.MapPost("/upload", async (
@@ -56,12 +58,12 @@ namespace DriverLedger.Api.Modules.Statements
                 }
 
                 // Metadata extraction FIRST (fresh stream)
-                var extractor = SelectMetadataExtractor(metadataExtractors, file.ContentType);
+                var metadataExtractor = SelectMetadataExtractor(metadataExtractors, file.ContentType);
 
                 StatementMetadataResult metadata;
                 using (var extractionStream = new MemoryStream(bytes, writable: false))
                 {
-                    metadata = await extractor.ExtractAsync(extractionStream, ct);
+                    metadata = await metadataExtractor.ExtractAsync(extractionStream, ct);
                 }
 
                 // Provider validation (Uber/Lyft only)
@@ -178,7 +180,7 @@ namespace DriverLedger.Api.Modules.Statements
                 db.FileObjects.Add(fileObject);
                 await db.SaveChangesAsync(ct);
 
-                // Create Statement
+                // Create Statement (always stored)
                 var statement = new Statement
                 {
                     TenantId = tenantId,
@@ -198,29 +200,13 @@ namespace DriverLedger.Api.Modules.Statements
                 db.Statements.Add(statement);
                 await db.SaveChangesAsync(ct);
 
-                // If it loses to a more granular existing statement, keep it saved only
-                if (!shouldAutoSubmit)
-                {
-                    statement.Status = "ReconciliationOnly";
-                    await db.SaveChangesAsync(ct);
-
-                    return Results.Ok(new
-                    {
-                        statementId = statement.Id,
-                        status = statement.Status,
-                        message = "Statement uploaded and stored for reconciliation only. A more granular statement already exists for this year, so it will not be posted to the ledger.",
-                        provider,
-                        periodType,
-                        periodKey,
-                        year
-                    });
-                }
-
-                // Auto-submit (post to pipeline)
-                statement.Status = "Submitted";
-                await db.SaveChangesAsync(ct);
-
-                var payload = new StatementReceived(
+                // --------------------------------------------------------------------
+                // Always publish statement.received so extraction runs and StatementLines
+                // are persisted for both:
+                // - Submitted statements (posted to ledger)
+                // - ReconciliationOnly statements (stored for reconciliation, NOT posted)
+                // --------------------------------------------------------------------
+                var receivedPayload = new StatementReceived(
                     StatementId: statement.Id,
                     TenantId: statement.TenantId,
                     Provider: statement.Provider,
@@ -231,16 +217,45 @@ namespace DriverLedger.Api.Modules.Statements
                     PeriodEnd: statement.PeriodEnd
                 );
 
-                var envelope = new MessageEnvelope<StatementReceived>(
+                var receivedEnvelope = new MessageEnvelope<StatementReceived>(
                     MessageId: Guid.NewGuid().ToString("N"),
                     Type: "statement.received.v1",
                     OccurredAt: DateTimeOffset.UtcNow,
                     TenantId: tenantId,
                     CorrelationId: Guid.NewGuid().ToString("N"),
-                    Data: payload
+                    Data: receivedPayload
                 );
 
-                await publisher.PublishAsync("q.statement.received", envelope, ct);
+                // If it loses to a more granular existing statement, keep it saved only
+                if (!shouldAutoSubmit)
+                {
+                    // ReconciliationOnly: extract lines, but do not submit to ledger pipeline.
+                    statement.Status = "ReconciliationOnly";
+                    await db.SaveChangesAsync(ct);
+
+                    await publisher.PublishAsync("q.statement.received", receivedEnvelope, ct);
+
+                    return Results.Ok(new
+                    {
+                        statementId = statement.Id,
+                        status = statement.Status,
+                        message =
+                            "Statement uploaded for reconciliation. Extraction will run to populate statement lines, " +
+                            "but it will not be posted to the ledger due to granularity rules.",
+                        provider,
+                        periodType,
+                        periodKey,
+                        year,
+                        extractedToLines = true,
+                        postedToLedger = false
+                    });
+                }
+
+                // Auto-submit (post to pipeline)
+                statement.Status = "Submitted";
+                await db.SaveChangesAsync(ct);
+
+                await publisher.PublishAsync("q.statement.received", receivedEnvelope, ct);
 
                 return Results.Accepted($"/api/statements/{statement.Id}", new
                 {
@@ -249,7 +264,6 @@ namespace DriverLedger.Api.Modules.Statements
                     postedToLedger = true
                 });
             }).DisableAntiforgery();
-
 
             // Submit a statement for processing with id (assumes already uploaded)
             group.MapPost("/{statementId:guid}/submit", async (
@@ -273,7 +287,9 @@ namespace DriverLedger.Api.Modules.Statements
                     return Results.Conflict(new
                     {
                         error = "Posting blocked by granularity rules",
-                        message = "This statement is stored for reconciliation only and cannot be submitted because a more granular statement exists for the same year.",
+                        message =
+                            "This statement is stored for reconciliation only and cannot be submitted because " +
+                            "a more granular statement exists for the same year.",
                         statementId = statement.Id,
                         provider = statement.Provider,
                         periodType = statement.PeriodType,
@@ -309,7 +325,9 @@ namespace DriverLedger.Api.Modules.Statements
                     return Results.Conflict(new
                     {
                         error = "Posting blocked by granularity rules",
-                        message = "A more granular statement already exists for this year. This statement will be kept for reconciliation only and will not be posted to the ledger.",
+                        message =
+                            "A more granular statement already exists for this year. This statement will be kept " +
+                            "for reconciliation only and will not be posted to the ledger.",
                         statementId = statement.Id,
                         provider = statement.Provider,
                         periodType = statement.PeriodType,
@@ -321,7 +339,7 @@ namespace DriverLedger.Api.Modules.Statements
                 statement.Status = "Submitted";
                 await db.SaveChangesAsync(ct);
 
-                var payload = new StatementReceived(
+                var receivedPayload = new StatementReceived(
                     StatementId: statement.Id,
                     TenantId: statement.TenantId,
                     Provider: statement.Provider,
@@ -332,20 +350,19 @@ namespace DriverLedger.Api.Modules.Statements
                     PeriodEnd: statement.PeriodEnd
                 );
 
-                var envelope = new MessageEnvelope<StatementReceived>(
+                var receivedEnvelope = new MessageEnvelope<StatementReceived>(
                     MessageId: Guid.NewGuid().ToString("N"),
                     Type: "statement.received.v1",
                     OccurredAt: DateTimeOffset.UtcNow,
                     TenantId: tenantId,
                     CorrelationId: Guid.NewGuid().ToString("N"),
-                    Data: payload
+                    Data: receivedPayload
                 );
 
-                await publisher.PublishAsync("q.statement.received", envelope, ct);
+                await publisher.PublishAsync("q.statement.received", receivedEnvelope, ct);
 
                 return Results.Accepted($"/api/statements/{statement.Id}", new { statement.Id });
             });
-
 
             // List statements
             group.MapGet("/", async (
@@ -413,7 +430,7 @@ namespace DriverLedger.Api.Modules.Statements
         private static bool IsRecognizedProvider(string provider)
             => RecognizedProviders.Contains(provider);
 
-        // Granularity: Monthly (3) > Quarterly (2) > YTD (1)
+        // Granularity: Monthly (3) > Quarterly (2) > YTD/Yearly (1)
         private static int GetGranularityRank(string? periodType)
         {
             if (string.IsNullOrWhiteSpace(periodType)) return 0;

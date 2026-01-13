@@ -310,13 +310,19 @@ namespace DriverLedger.Infrastructure.Statements.Extraction
                     var desc = (line.Description ?? string.Empty).Trim();
 
                     var allowed =
-                        string.Equals(line.LineType, "TaxCollected", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(line.LineType, "Itc", StringComparison.OrdinalIgnoreCase) ||
-                        (string.Equals(line.LineType, "Income", StringComparison.OrdinalIgnoreCase) &&
-                            (string.Equals(desc, "Uber Rides Total (Gross)", StringComparison.OrdinalIgnoreCase)
-                             || IsGrossUberRidesFares(desc))) ||
-                        (string.Equals(line.LineType, "Fee", StringComparison.OrdinalIgnoreCase) &&
-                            string.Equals(desc, "Uber Rides Fees Total", StringComparison.OrdinalIgnoreCase));
+                     (string.Equals(line.LineType, "TaxCollected", StringComparison.OrdinalIgnoreCase) &&
+                      string.Equals(desc, "GST/HST you collected from Riders", StringComparison.OrdinalIgnoreCase)) ||
+
+                     (string.Equals(line.LineType, "Itc", StringComparison.OrdinalIgnoreCase) &&
+                      string.Equals(desc, "GST/HST you paid to Uber", StringComparison.OrdinalIgnoreCase)) ||
+
+                     (string.Equals(line.LineType, "Income", StringComparison.OrdinalIgnoreCase) &&
+                         (string.Equals(desc, "Uber Rides Total (Gross)", StringComparison.OrdinalIgnoreCase)
+                          || IsGrossUberRidesFares(desc))) ||
+
+                     (string.Equals(line.LineType, "Fee", StringComparison.OrdinalIgnoreCase) &&
+                      string.Equals(desc, "Uber Rides Fees Total", StringComparison.OrdinalIgnoreCase));
+
 
                     if (!allowed)
                         continue;

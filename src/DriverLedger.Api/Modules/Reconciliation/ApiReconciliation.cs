@@ -1,5 +1,8 @@
 using DriverLedger.Application.Common;
+using DriverLedger.Application.Messaging;
+using DriverLedger.Application.Statements.Messages;
 using DriverLedger.Application.Statements.Reconciliation;
+using DriverLedger.Infrastructure.Messaging;
 
 namespace DriverLedger.Api.Modules.Reconciliation
 {
@@ -18,6 +21,7 @@ namespace DriverLedger.Api.Modules.Reconciliation
                 ITenantProvider tenantProvider,
                 IStatementReconciliationService reconciliationService,
                 DriverLedgerDbContext db,
+                IMessagePublisher publisher,
                 CancellationToken ct) =>
             {
                 var tenantId = tenantProvider.TenantId ?? Guid.Empty;
@@ -29,9 +33,10 @@ namespace DriverLedger.Api.Modules.Reconciliation
 
                 try
                 {
+                    // 1) Run reconciliation (writes/updates ReconciliationRun + Variances)
                     var run = await reconciliationService.ReconcileUberYearAsync(tenantId, year, ct);
 
-                    // Return with variances
+                    // 2) Hydrate for API response
                     var hydrated = await db.ReconciliationRuns
                         .AsNoTracking()
                         .Include(r => r.Variances)
@@ -63,6 +68,24 @@ namespace DriverLedger.Api.Modules.Reconciliation
                                 .ToList()
                         })
                         .FirstAsync(ct);
+
+                    // 3) Publish reconciliation.completed so Functions can post variances to ledger, etc.
+                    // IMPORTANT: Message contract MUST match what the ServiceBusTrigger expects.
+                    var completedPayload = new ReconciliationCompleted(
+                        ReconciliationRunId: run.Id,
+                        TenantId: tenantId
+                    );
+
+                    var completedEnvelope = new MessageEnvelope<ReconciliationCompleted>(
+                        MessageId: Guid.NewGuid().ToString("N"),
+                        Type: "reconciliation.completed.v1",
+                        OccurredAt: DateTimeOffset.UtcNow,
+                        TenantId: tenantId,
+                        CorrelationId: Guid.NewGuid().ToString("N"),
+                        Data: completedPayload
+                    );
+
+                    await publisher.PublishAsync("q.reconciliation.completed", completedEnvelope, ct);
 
                     return Results.Ok(hydrated);
                 }

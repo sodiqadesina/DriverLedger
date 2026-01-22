@@ -37,6 +37,10 @@ public sealed class UberStatementReconciliationService : IStatementReconciliatio
     private const string PeriodTypeYearly = "Yearly";
     private const string PeriodTypeMonthly = "Monthly";
 
+    // We only want monthly truth coming from actually-posted monthlies.
+    // (Prevents Draft/Uploaded/ReconciliationOnly from polluting totals.)
+    private const string StatementStatusPosted = "Posted";
+
     // Canonical descriptors (match what extraction writes into StatementLine.Description)
     private const string UberRidesTotalGrossDesc = "Uber Rides Total (Gross)";
     private const string UberRidesFeesTotalDesc = "Uber Rides Fees Total";
@@ -54,7 +58,7 @@ public sealed class UberStatementReconciliationService : IStatementReconciliatio
     {
         var yearKey = year.ToString();
 
-        // 1) Yearly statement is required
+        // 1) Yearly statement is required (can be ReconciliationOnly and still valid for comparing)
         var yearlyStatementId = await _db.Statements
             .AsNoTracking()
             .Where(s =>
@@ -72,14 +76,15 @@ public sealed class UberStatementReconciliationService : IStatementReconciliatio
                 $"Expected Provider='{ProviderUber}', PeriodType='{PeriodTypeYearly}', PeriodKey='{yearKey}'.");
         }
 
-        // 2) Monthly statements for the year
+        // 2) Monthly statements for the year (only Posted)
         var monthlyStatementIds = await _db.Statements
             .AsNoTracking()
             .Where(s =>
                 s.TenantId == tenantId &&
                 s.Provider == ProviderUber &&
                 s.PeriodType == PeriodTypeMonthly &&
-                s.PeriodStart.Year == year)
+                s.PeriodStart.Year == year &&
+                s.Status == StatementStatusPosted)
             .Select(s => s.Id)
             .ToListAsync(ct);
 
@@ -114,7 +119,7 @@ public sealed class UberStatementReconciliationService : IStatementReconciliatio
 
         // 4) Allowlist for MVP reconciliation
         //
-        // You asked: calculate variances independently (especially tax).
+        //  variances is calculated independently (especially tax).
         // This means:
         // - TaxCollected variance is its own row (TaxCollected.GSTHST)
         // - ITC variance is its own row (ITC.GSTHSTPaidToUber)
@@ -179,6 +184,7 @@ public sealed class UberStatementReconciliationService : IStatementReconciliatio
         };
 
         var variances = new List<ReconciliationVariance>(defs.Length);
+
         foreach (var def in defs)
         {
             var m = MonthlyTotal(def);

@@ -70,6 +70,7 @@ var host = new HostBuilder()
         services.AddScoped<StatementExtractionHandler>();
         services.AddScoped<ReceiptToLedgerPostingHandler>();
         services.AddScoped<StatementToLedgerPostingHandler>();
+        services.AddScoped<ReconciliationToLedgerPostingHandler>();
 
     })
     .Build();
